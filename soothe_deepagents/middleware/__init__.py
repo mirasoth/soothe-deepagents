@@ -48,7 +48,11 @@ Use a **plain tool** when:
 """
 
 from soothe_deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
-from soothe_deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
+from soothe_deepagents.middleware.filesystem import (
+    ApplyDiffSchema,
+    FilesystemMiddleware,
+    FilesystemPermission,
+)
 from soothe_deepagents.middleware.llm_call_policy import LLMCallPolicyConfig, run_llm_call_with_policy
 from soothe_deepagents.middleware.llm_rate_limit import (
     EnhancedTimeoutError,
@@ -95,6 +99,7 @@ __all__ = [
     "DEEPAGENTS_DEFAULT_SUMMARY_PROMPT",
     "GRADER_SYSTEM_PROMPT",
     "RUBRIC_GRADER_MESSAGE_SOURCE",
+    "ApplyDiffSchema",
     "AsyncSubAgent",
     "AsyncSubAgentMiddleware",
     "CompiledSubAgent",
