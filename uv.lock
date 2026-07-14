@@ -519,7 +519,7 @@ wheels = [
 [[package]]
 name = "deepagents"
 version = "0.6.12"
-source = { editable = "." }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain" },
     { name = "langchain-anthropic" },
@@ -528,74 +528,9 @@ dependencies = [
     { name = "langsmith" },
     { name = "wcmatch" },
 ]
-
-[package.optional-dependencies]
-aws = [
-    { name = "langchain-aws" },
-]
-quickjs = [
-    { name = "langchain-quickjs" },
-]
-video = [
-    { name = "av" },
-    { name = "pillow" },
-]
-
-[package.dev-dependencies]
-test = [
-    { name = "av" },
-    { name = "build" },
-    { name = "langchain-openai" },
-    { name = "langchain-tests" },
-    { name = "pillow" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-benchmark" },
-    { name = "pytest-codspeed" },
-    { name = "pytest-cov" },
-    { name = "pytest-socket" },
-    { name = "pytest-timeout" },
-    { name = "pytest-watcher" },
-    { name = "pytest-xdist" },
-    { name = "ruff" },
-    { name = "twine" },
-    { name = "ty" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "av", marker = "extra == 'video'", specifier = ">=17.0.0,<18.0.0" },
-    { name = "langchain", specifier = ">=1.3.12,<2.0.0" },
-    { name = "langchain-anthropic", specifier = ">=1.4.8,<2.0.0" },
-    { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.6.2,<2.0.0" },
-    { name = "langchain-core", specifier = ">=1.4.9,<2.0.0" },
-    { name = "langchain-google-genai", specifier = ">=4.2.7,<5.0.0" },
-    { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.3.2" },
-    { name = "langsmith", specifier = ">=0.9.3" },
-    { name = "pillow", marker = "extra == 'video'", specifier = ">=10.0.0,<13.0.0" },
-    { name = "wcmatch", specifier = ">=10.1" },
-]
-provides-extras = ["aws", "quickjs", "video"]
-
-[package.metadata.requires-dev]
-test = [
-    { name = "av", specifier = ">=17.0.0,<18.0.0" },
-    { name = "build" },
-    { name = "langchain-openai" },
-    { name = "langchain-tests", specifier = ">=1.1.9" },
-    { name = "pillow", specifier = ">=10.0.0,<13.0.0" },
-    { name = "pytest" },
-    { name = "pytest-asyncio", specifier = ">=1.4.0" },
-    { name = "pytest-benchmark" },
-    { name = "pytest-codspeed", specifier = ">=5.0.3,<6.0.0" },
-    { name = "pytest-cov" },
-    { name = "pytest-socket" },
-    { name = "pytest-timeout", specifier = ">=2.4.0,<3.0.0" },
-    { name = "pytest-watcher", specifier = ">=0.6.3,<1.0.0" },
-    { name = "pytest-xdist" },
-    { name = "ruff", specifier = ">=0.15.20,<0.16.0" },
-    { name = "twine" },
-    { name = "ty", specifier = ">=0.0.54,<1.0.0" },
+sdist = { url = "https://files.pythonhosted.org/packages/e0/db/a6acdc72a9e90c3f07ed10de35c951734a02d4facb693bb59684ad368801/deepagents-0.6.12.tar.gz", hash = "sha256:1f281c0bc5a63132f62e2ee345c1dc593b23188da6e23016401f6879fbe54b5f", size = 211364, upload-time = "2026-06-25T17:26:52.775Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/98/49/af7219b3c13520fee047bb807cfaefba17f8e4584c551d946773589a4f08/deepagents-0.6.12-py3-none-any.whl", hash = "sha256:28b8fa0119ca0a689e3e18e288c4634e4046062acfc87a1cb34289d3af3a1c88", size = 236120, upload-time = "2026-06-25T17:26:51.736Z" },
 ]
 
 [[package]]
@@ -745,7 +680,7 @@ name = "importlib-metadata"
 version = "8.7.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "zipp" },
+    { name = "zipp", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f3/49/3b30cad09e7771a4982d9975a8cbf64f00d4a1ececb53297f1d9a7be1b10/importlib_metadata-8.7.1.tar.gz", hash = "sha256:49fef1ae6440c182052f407c8d34a68f72efc36db9ca90dc0113398f2fdde8bb", size = 57107, upload-time = "2025-12-21T10:00:19.278Z" }
 wheels = [
@@ -2167,8 +2102,8 @@ name = "secretstorage"
 version = "3.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cryptography" },
-    { name = "jeepney" },
+    { name = "cryptography", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "jeepney", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1c/03/e834bcd866f2f8a49a85eaff47340affa3bfa391ee9912a952a1faa68c7b/secretstorage-3.5.0.tar.gz", hash = "sha256:f04b8e4689cbce351744d5537bf6b1329c6fc68f91fa666f60a380edddcd11be", size = 19884, upload-time = "2025-11-23T19:02:53.191Z" }
 wheels = [
@@ -2191,6 +2126,87 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a2/87/a6771e1546d97e7e041b6ae58d80074f81b7d5121207425c964ddf5cfdbd/sniffio-1.3.1.tar.gz", hash = "sha256:f4324edc670a0f49750a81b895f35c3adb843cca46f0530f79fc1babb23789dc", size = 20372, upload-time = "2024-02-25T23:20:04.057Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e9/44/75a9c9421471a6c4805dbf2356f7c181a29c1879239abab1ea2cc8f38b40/sniffio-1.3.1-py3-none-any.whl", hash = "sha256:2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2", size = 10235, upload-time = "2024-02-25T23:20:01.196Z" },
+]
+
+[[package]]
+name = "soothe-deepagents"
+source = { editable = "." }
+dependencies = [
+    { name = "langchain" },
+    { name = "langchain-anthropic" },
+    { name = "langchain-core" },
+    { name = "langchain-google-genai" },
+    { name = "langsmith" },
+    { name = "wcmatch" },
+]
+
+[package.optional-dependencies]
+aws = [
+    { name = "langchain-aws" },
+]
+quickjs = [
+    { name = "langchain-quickjs" },
+]
+video = [
+    { name = "av" },
+    { name = "pillow" },
+]
+
+[package.dev-dependencies]
+test = [
+    { name = "av" },
+    { name = "build" },
+    { name = "langchain-openai" },
+    { name = "langchain-tests" },
+    { name = "pillow" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-benchmark" },
+    { name = "pytest-codspeed" },
+    { name = "pytest-cov" },
+    { name = "pytest-socket" },
+    { name = "pytest-timeout" },
+    { name = "pytest-watcher" },
+    { name = "pytest-xdist" },
+    { name = "ruff" },
+    { name = "twine" },
+    { name = "ty" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "av", marker = "extra == 'video'", specifier = ">=17.0.0,<18.0.0" },
+    { name = "langchain", specifier = ">=1.3.12,<2.0.0" },
+    { name = "langchain-anthropic", specifier = ">=1.4.8,<2.0.0" },
+    { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.6.2,<2.0.0" },
+    { name = "langchain-core", specifier = ">=1.4.9,<2.0.0" },
+    { name = "langchain-google-genai", specifier = ">=4.2.7,<5.0.0" },
+    { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.3.2" },
+    { name = "langsmith", specifier = ">=0.9.3" },
+    { name = "pillow", marker = "extra == 'video'", specifier = ">=10.0.0,<13.0.0" },
+    { name = "wcmatch", specifier = ">=10.1" },
+]
+provides-extras = ["aws", "quickjs", "video"]
+
+[package.metadata.requires-dev]
+test = [
+    { name = "av", specifier = ">=17.0.0,<18.0.0" },
+    { name = "build" },
+    { name = "langchain-openai" },
+    { name = "langchain-tests", specifier = ">=1.1.9" },
+    { name = "pillow", specifier = ">=10.0.0,<13.0.0" },
+    { name = "pytest" },
+    { name = "pytest-asyncio", specifier = ">=1.4.0" },
+    { name = "pytest-benchmark" },
+    { name = "pytest-codspeed", specifier = ">=5.0.3,<6.0.0" },
+    { name = "pytest-cov" },
+    { name = "pytest-socket" },
+    { name = "pytest-timeout", specifier = ">=2.4.0,<3.0.0" },
+    { name = "pytest-watcher", specifier = ">=0.6.3,<1.0.0" },
+    { name = "pytest-xdist" },
+    { name = "ruff", specifier = ">=0.15.20,<0.16.0" },
+    { name = "twine" },
+    { name = "ty", specifier = ">=0.0.54,<1.0.0" },
 ]
 
 [[package]]

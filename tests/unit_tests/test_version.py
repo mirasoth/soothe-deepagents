@@ -4,6 +4,8 @@ import tomllib
 from pathlib import Path
 
 import soothe_deepagents
+from soothe_deepagents.backends import protocol
+from soothe_deepagents.backends.protocol import ReadResult
 
 
 def test_version_matches_pyproject() -> None:
@@ -21,7 +23,4 @@ def test_version_matches_pyproject() -> None:
 
 def test_soothe_deepagents_namespace_imports_submodules() -> None:
     """Canonical ``soothe_deepagents`` imports should resolve consistently."""
-    from soothe_deepagents.backends.protocol import ReadResult
-    from soothe_deepagents.backends.protocol import ReadResult as CanonicalReadResult
-
-    assert ReadResult is CanonicalReadResult
+    assert ReadResult is protocol.ReadResult

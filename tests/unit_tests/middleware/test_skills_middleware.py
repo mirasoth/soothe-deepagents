@@ -1010,7 +1010,7 @@ def test_format_skills_locations_skills_leaf_climbs_to_parent() -> None:
     result = middleware._format_skills_locations()
     assert "**Claude Skills**:" in result
     assert "**Agents Skills**:" in result
-    assert "**Deepagents Skills**:" in result
+    assert "**Soothe Deepagents Skills**:" in result
     assert "**Skills Skills**:" not in result
 
 

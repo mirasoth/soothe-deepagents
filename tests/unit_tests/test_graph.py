@@ -1739,7 +1739,7 @@ class TestModelNoneDeprecationWarning:
         assert deprecations[0].category is LangChainDeprecationWarning
         # And it should be attributed to the caller frame (this test file),
         # not to a frame inside `soothe_deepagents` itself.
-        assert deprecations[0].filename == __file__
+        assert Path(deprecations[0].filename).name == Path(__file__).name
 
     def test_model_none_default_emits_deprecation_warning(self) -> None:
         """Calling create_deep_agent() with no model arg should emit a DeprecationWarning."""

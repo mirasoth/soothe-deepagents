@@ -1,9 +1,10 @@
-.PHONY: format lint test tests integration_test integration_tests test_watch benchmark bench bench-memory help run lint_package lint_tests check_imports coverage type typecheck update-snapshots
+.PHONY: format lint test tests integration_test integration_tests test_watch benchmark bench bench-memory help run lint_package lint_tests check_imports coverage type typecheck update-snapshots sync build publish
 
 .DEFAULT_GOAL := help
 
 .EXPORT_ALL_VARIABLES:
 UV_FROZEN = true
+PYPI_REPOSITORY ?= pypi
 
 ######################
 # TESTING AND COVERAGE
@@ -53,6 +54,16 @@ bench-memory: ## Run memory benchmarks under CodSpeed instrumentation
 run: ## Reinstall and run package
 	uvx --no-cache --reinstall .
 
+sync: ## Create/update local .venv from lockfile
+	uv sync --all-groups
+
+build: sync ## Build source and wheel distributions
+	rm -rf dist
+	uv run --group test python -m build
+
+publish: build ## Build and publish package to PyPI (set TWINE_* env vars)
+	uv run --group test twine upload --repository $(PYPI_REPOSITORY) dist/*
+
 
 ######################
 # LINTING AND FORMATTING
@@ -63,7 +74,7 @@ PYTHON_FILES=.
 lint format: PYTHON_FILES=.
 lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=libs/deepagents --name-only --diff-filter=d main | grep -E '\.py$$|\.ipynb$$')
 lint_package: ## Lint only the package
-lint_package: PYTHON_FILES=soothe_deepagents deepagents
+lint_package: PYTHON_FILES=soothe_deepagents
 lint_tests: ## Lint only tests
 lint_tests: PYTHON_FILES=tests
 
@@ -75,7 +86,7 @@ lint lint_diff lint_package lint_tests:
 
 type: ## Run type checker
 type typecheck:
-	uv run --all-groups ty check soothe_deepagents deepagents
+	uv run --all-groups ty check soothe_deepagents
 
 format: ## Run code formatters
 format format_diff:
@@ -83,7 +94,7 @@ format format_diff:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check --fix $(PYTHON_FILES)
 
 check_imports: ## Check imports
-check_imports: $(shell find soothe_deepagents deepagents -name '*.py')
+check_imports: $(shell find soothe_deepagents -name '*.py')
 	uv run --all-groups python ./scripts/check_imports.py $^
 
 ######################
