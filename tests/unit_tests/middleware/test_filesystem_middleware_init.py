@@ -95,6 +95,28 @@ class TestFilesystemMiddlewareInit:
         assert "edit_file" in tools
         assert tools["edit_file"].description == "Squirtle"
 
+
+class TestFilesystemMiddlewareArtifactsPrefixMode:
+    """Regression tests for artifacts prefix resolution modes."""
+
+    def test_workspace_fallback_skips_portability_check_for_backend_factory(self) -> None:
+        """Callable backends should not trigger init-time portability checks.
+
+        The backend instance is only available at tool runtime, so constructor-time
+        prefix selection must keep backend defaults without raising type/runtime errors.
+        """
+
+        def backend_factory(_: object) -> StateBackend:
+            return StateBackend()
+
+        middleware = FilesystemMiddleware(
+            backend=backend_factory,
+            artifacts_prefix_mode="workspace_fallback",
+        )
+
+        assert middleware._large_tool_results_prefix == "/large_tool_results"
+        assert middleware._conversation_history_prefix == "/conversation_history"
+
     def test_filesystem_tool_prompt_override_with_longterm_memory(self) -> None:
         """Test that custom tool descriptions work with composite backends and longterm memory."""
         agent = create_agent(

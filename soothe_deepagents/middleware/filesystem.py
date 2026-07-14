@@ -1469,9 +1469,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         root_prefix = _normalize_artifact_prefix(artifacts_root)
         default_large_tool_results_prefix = f"{root_prefix}/large_tool_results"
         default_conversation_history_prefix = f"{root_prefix}/conversation_history"
-        if artifacts_prefix_mode == "workspace_fallback" and _is_portability_risky_backend_prefix(
-            self.backend,
-            default_large_tool_results_prefix,
+        if (
+            artifacts_prefix_mode == "workspace_fallback"
+            and isinstance(self.backend, BackendProtocol)
+            and _is_portability_risky_backend_prefix(
+                self.backend,
+                default_large_tool_results_prefix,
+            )
         ):
             default_large_tool_results_prefix = _WORKSPACE_FALLBACK_LARGE_RESULTS_PREFIX
             default_conversation_history_prefix = _WORKSPACE_FALLBACK_CONVERSATION_HISTORY_PREFIX
