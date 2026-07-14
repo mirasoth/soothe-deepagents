@@ -446,6 +446,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
+    recursion_limit: int = 9_999,
 ) -> CompiledStateGraph[AgentState[ResponseT], ContextT, InputAgentState, OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
     r"""Create a deep agent.
 
@@ -759,6 +760,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         cache: The cache to use for the agent.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
+        recursion_limit: LangGraph recursion limit for this compiled agent run config.
 
     Returns:
         A configured deep agent.
@@ -1149,7 +1151,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         state_schema=state_schema if state_schema is not None else DeepAgentState,
     ).with_config(
         {
-            "recursion_limit": 9_999,
+            "recursion_limit": int(recursion_limit),
             "metadata": {
                 "ls_integration": "soothe_deepagents",
                 "lc_versions": {"soothe_deepagents": __version__},
