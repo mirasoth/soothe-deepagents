@@ -9,7 +9,7 @@ from langgraph.store.memory import InMemoryStore
 
 import soothe_deepagents.middleware.filesystem as filesystem_middleware
 from soothe_deepagents.backends import StateBackend, StoreBackend
-from soothe_deepagents.backends.protocol import ExecuteResponse, GrepResult, SandboxBackendProtocol
+from soothe_deepagents.backends.protocol import ExecuteResponse, GrepResult, LsResult, SandboxBackendProtocol
 from soothe_deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, TRUNCATION_GUIDANCE
 from soothe_deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemPermission, FilesystemState
 
@@ -146,6 +146,108 @@ class TestFilesystemMiddlewareAsync:
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
         result = await ls_tool.ainvoke({"runtime": _runtime(), "path": "/"})
         assert result.content == "No files found"
+
+    async def test_afile_info_root_is_stable_across_repeated_calls(self):
+        """Repeated async root lookups return consistent directory metadata."""
+        middleware = FilesystemMiddleware(backend=StateBackend())
+        file_info_tool = next(tool for tool in middleware.tools if tool.name == "file_info")
+
+        first = await file_info_tool.ainvoke({"runtime": _runtime(), "path": "/"})
+        second = await file_info_tool.ainvoke({"runtime": _runtime(), "path": "/"})
+
+        assert first.status == "success"
+        assert first.content == "Path: /\nType: directory"
+        assert second.content == first.content
+
+    async def test_afile_info_missing_path_returns_not_found(self):
+        backend, _ = _make_backend({})
+        middleware = FilesystemMiddleware(backend=backend)
+        file_info_tool = next(tool for tool in middleware.tools if tool.name == "file_info")
+
+        result = await file_info_tool.ainvoke({"runtime": _runtime(), "path": "/ghost.txt"})
+
+        assert result.status == "error"
+        assert result.content == "Error: file not found: /ghost.txt"
+
+    async def test_afile_info_backend_lookup_error_surfaces_to_tool_result(self):
+        backend, _ = _make_backend({})
+        middleware = FilesystemMiddleware(backend=backend)
+        file_info_tool = next(tool for tool in middleware.tools if tool.name == "file_info")
+        backend_obj = middleware._get_backend(_runtime())
+
+        async def broken_als(*_args: object, **_kwargs: object) -> LsResult:
+            return LsResult(error="listing unavailable")
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "als", side_effect=broken_als),
+        ):
+            result = await file_info_tool.ainvoke({"runtime": _runtime(), "path": "/docs"})
+
+        assert result.status == "error"
+        assert result.content == "Error: listing unavailable"
+
+    async def test_afile_info_permission_denied_returns_error(self):
+        files = {
+            "/docs/readme.md": FileData(
+                content=["hello"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            )
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(
+            backend=backend,
+            _permissions=[FilesystemPermission(operations=["read"], paths=["/**"], mode="deny")],
+        )
+        file_info_tool = next(tool for tool in middleware.tools if tool.name == "file_info")
+
+        result = await file_info_tool.ainvoke({"runtime": _runtime(), "path": "/docs/readme.md"})
+
+        assert result.status == "error"
+        assert result.content == "Error: permission denied for read on /docs/readme.md"
+
+    async def test_afile_info_ignores_non_standard_metadata_types(self):
+        backend, _ = _make_backend({})
+        middleware = FilesystemMiddleware(backend=backend)
+        file_info_tool = next(tool for tool in middleware.tools if tool.name == "file_info")
+        malformed_entry = {
+            "path": "/notes.txt",
+            "is_dir": False,
+            "size": "huge",
+            "modified_at": 123,
+        }
+        with patch.object(middleware, "_afind_path_info", return_value=(malformed_entry, None)):
+            result = await file_info_tool.ainvoke({"runtime": _runtime(), "path": "/notes.txt"})
+
+        assert result.status == "success"
+        assert result.content == "Path: /notes.txt\nType: file"
+
+    async def test_aapply_diff_updates_file_content(self):
+        files = {
+            "/test.txt": FileData(
+                content="old line\n",
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        apply_diff_tool = next(tool for tool in middleware.tools if tool.name == "apply_diff")
+        diff = "--- test.txt\n+++ test.txt\n@@ -1 +1 @@\n-old line\n+new line\n"
+
+        result = await apply_diff_tool.ainvoke(
+            {
+                "file_path": "/test.txt",
+                "diff": diff,
+                "runtime": _runtime(),
+            }
+        )
+
+        assert result.status == "success"
+        read_result = await backend.aread("/test.txt", offset=0, limit=10)
+        assert read_result.file_data is not None
+        assert read_result.file_data["content"] == "new line\n"
 
     async def test_aglob_search_shortterm_simple_pattern(self):
         """Test async glob with simple pattern."""

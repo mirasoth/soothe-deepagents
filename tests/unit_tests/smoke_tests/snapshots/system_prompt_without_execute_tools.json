@@ -257,6 +257,30 @@
   },
   {
     "function": {
+      "description": "Apply a unified diff patch to a text file.\n\nUsage:\n- Diff must be in standard unified diff format with at least one `@@` hunk.\n- Applies context/removal/addition lines directly to UTF-8 file content.\n- Returns an error when hunks do not match current file contents.",
+      "name": "apply_diff",
+      "parameters": {
+        "properties": {
+          "diff": {
+            "description": "Unified diff content to apply. Must be in standard diff format.",
+            "type": "string"
+          },
+          "file_path": {
+            "description": "Absolute path to the file to patch. Must be absolute, not relative.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path",
+          "diff"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
       "description": "Deletes a file or directory from the filesystem.\n\nUsage:\n- Permanently removes the file or directory at the given absolute path.\n- Deleting a directory removes it and everything inside it, recursively. Prefer\n  deleting a directory in one call over deleting each file individually.\n- Set `backup=true` to create a timestamped backup for UTF-8 text files before deletion.\n- This cannot be undone, so only delete paths you are sure are no longer needed.",
       "name": "delete",
       "parameters": {

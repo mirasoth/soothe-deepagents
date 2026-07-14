@@ -7,6 +7,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import mimetypes
+import re
 import threading
 import uuid
 from binascii import Error as BinasciiError
@@ -115,6 +116,7 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
     "edit_lines": "write",
     "insert_lines": "write",
     "delete_lines": "write",
+    "apply_diff": "write",
     "delete": "write",
 }
 """Default mapping from filesystem tool name to its operation category."""
@@ -163,6 +165,80 @@ def _is_portability_risky_backend_prefix(backend: BackendProtocol, prefix: str) 
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
     """Build a `ToolMessage` carrying a plain text error."""
     return ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error")
+
+
+@dataclass
+class _DiffHunk:
+    old_start: int
+    lines: list[tuple[str, str]]
+
+
+_UNIFIED_DIFF_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+def _parse_unified_diff_hunks(diff_text: str) -> tuple[list[_DiffHunk] | None, str | None]:
+    """Parse unified-diff hunks for a single-file patch payload."""
+    hunks: list[_DiffHunk] = []
+    current_hunk: _DiffHunk | None = None
+    for raw_line in diff_text.splitlines():
+        if raw_line.startswith("@@"):
+            match = _UNIFIED_DIFF_HUNK_RE.match(raw_line)
+            if match is None:
+                return None, f"Invalid unified diff hunk header: {raw_line}"
+            current_hunk = _DiffHunk(old_start=int(match.group(1)), lines=[])
+            hunks.append(current_hunk)
+            continue
+
+        if current_hunk is None:
+            continue
+
+        if raw_line.startswith("\\"):
+            # Ignore "\ No newline at end of file" metadata.
+            continue
+
+        if not raw_line:
+            return None, "Invalid diff line in hunk: empty line without prefix"
+
+        op = raw_line[0]
+        if op not in {" ", "+", "-"}:
+            return None, f"Invalid diff operation {op!r} in line: {raw_line}"
+        current_hunk.lines.append((op, raw_line[1:]))
+
+    if not hunks:
+        return None, "No unified diff hunks found"
+
+    return hunks, None
+
+
+def _apply_unified_diff_text(original_content: str, diff_text: str) -> tuple[str | None, str | None]:
+    """Apply unified diff text and return `(updated_content, error)`."""
+    had_trailing_newline = original_content.endswith("\n")
+    content_lines = original_content.splitlines()
+    hunks, parse_error = _parse_unified_diff_hunks(diff_text)
+    if parse_error is not None or hunks is None:
+        return None, parse_error or "Failed to parse unified diff hunks"
+
+    for hunk in hunks:
+        line_index = max(hunk.old_start - 1, 0)
+        for op, expected in hunk.lines:
+            if op == " ":
+                if line_index >= len(content_lines) or content_lines[line_index] != expected:
+                    return None, (f"Context mismatch while applying diff at line {line_index + 1}: expected {expected!r}")
+                line_index += 1
+                continue
+            if op == "-":
+                if line_index >= len(content_lines) or content_lines[line_index] != expected:
+                    return None, (f"Removal mismatch while applying diff at line {line_index + 1}: expected {expected!r}")
+                del content_lines[line_index]
+                continue
+
+            content_lines.insert(line_index, expected)
+            line_index += 1
+
+    updated_content = "\n".join(content_lines)
+    if content_lines and had_trailing_newline:
+        updated_content += "\n"
+    return updated_content, None
 
 
 def _is_read_file_media_result(message: AnyMessage) -> bool:
@@ -818,6 +894,13 @@ class DeleteLinesSchema(BaseModel):
     end_line: int = Field(description="Last line to delete (1-indexed, inclusive). Must be >= start_line.")
 
 
+class ApplyDiffSchema(BaseModel):
+    """Input schema for the `apply_diff` tool."""
+
+    file_path: str = Field(description="Absolute path to the file to patch. Must be absolute, not relative.")
+    diff: str = Field(description="Unified diff content to apply. Must be in standard diff format.")
+
+
 class GlobSchema(BaseModel):
     """Input schema for the `glob` tool."""
 
@@ -957,6 +1040,14 @@ Usage:
 - Useful for removing obsolete blocks without replacing nearby content.
 """
 
+APPLY_DIFF_TOOL_DESCRIPTION = """Apply a unified diff patch to a text file.
+
+Usage:
+- Diff must be in standard unified diff format with at least one `@@` hunk.
+- Applies context/removal/addition lines directly to UTF-8 file content.
+- Returns an error when hunks do not match current file contents.
+"""
+
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
 
 Supports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character).
@@ -1044,6 +1135,7 @@ FsToolName = Literal[
     "edit_lines",
     "insert_lines",
     "delete_lines",
+    "apply_diff",
     "delete",
     "glob",
     "grep",
@@ -1060,6 +1152,7 @@ _FS_TOOL_ORDER: tuple[str, ...] = (
     "edit_lines",
     "insert_lines",
     "delete_lines",
+    "apply_diff",
     "delete",
     "glob",
     "grep",
@@ -1074,6 +1167,7 @@ _FS_TOOL_DESCRIPTION_LINES: dict[str, str] = {
     "edit_lines": "edit_lines: replace a line range in a text file",
     "insert_lines": "insert_lines: insert text at a line in a text file",
     "delete_lines": "delete_lines: delete a line range from a text file",
+    "apply_diff": "apply_diff: apply a unified diff patch to a text file",
     "delete": "delete: delete a file or directory (recursively) from the filesystem",
     "glob": 'glob: find files matching a pattern (e.g., "**/*.py")',
     "grep": "grep: search for text within files",
@@ -1526,6 +1620,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             self._create_edit_lines_tool(),
             self._create_insert_lines_tool(),
             self._create_delete_lines_tool(),
+            self._create_apply_diff_tool(),
             self._create_delete_tool(),
             self._create_glob_tool(),
             self._create_grep_tool(),
@@ -2583,6 +2678,107 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             coroutine=async_delete_lines,
             infer_schema=False,
             args_schema=DeleteLinesSchema,
+        )
+
+    def _create_apply_diff_tool(self) -> BaseTool:  # noqa: C901
+        """Create the apply_diff tool."""
+        tool_description = self._custom_tool_descriptions.get("apply_diff") or APPLY_DIFF_TOOL_DESCRIPTION
+
+        def sync_apply_diff(  # noqa: PLR0911
+            file_path: str,
+            diff: str,
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> ToolMessage:
+            """Synchronous wrapper for apply_diff tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return _tool_error("apply_diff", runtime.tool_call_id, f"Error: {e}")
+
+            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+                return _tool_error("apply_diff", runtime.tool_call_id, f"Error: permission denied for write on {validated_path}")
+
+            read_result = resolved_backend.read(validated_path, offset=0, limit=1_000_000)
+            if read_result.error:
+                return _tool_error("apply_diff", runtime.tool_call_id, f"Error: {read_result.error}")
+            if read_result.file_data is None:
+                return _tool_error("apply_diff", runtime.tool_call_id, f"Error: no data returned for '{validated_path}'")
+            if read_result.file_data.get("encoding", "utf-8") != "utf-8":
+                return _tool_error("apply_diff", runtime.tool_call_id, "Error: apply_diff only supports UTF-8 text files")
+
+            updated_content, apply_error = _apply_unified_diff_text(read_result.file_data["content"], diff)
+            if apply_error is not None or updated_content is None:
+                return _tool_error(
+                    "apply_diff",
+                    runtime.tool_call_id,
+                    "Failed to apply diff with Python fallback.\n"
+                    f"Error: {apply_error or 'unknown error'}\n"
+                    "Ensure diff is in unified format and applies cleanly.",
+                )
+
+            write_result = resolved_backend.write(validated_path, updated_content)
+            if write_result.error:
+                return _tool_error("apply_diff", runtime.tool_call_id, f"Error: {write_result.error}")
+
+            return ToolMessage(
+                content=f"Applied diff to {validated_path}",
+                name="apply_diff",
+                tool_call_id=runtime.tool_call_id,
+                status="success",
+            )
+
+        async def async_apply_diff(  # noqa: PLR0911
+            file_path: str,
+            diff: str,
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> ToolMessage:
+            """Asynchronous wrapper for apply_diff tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return _tool_error("apply_diff", runtime.tool_call_id, f"Error: {e}")
+
+            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+                return _tool_error("apply_diff", runtime.tool_call_id, f"Error: permission denied for write on {validated_path}")
+
+            read_result = await resolved_backend.aread(validated_path, offset=0, limit=1_000_000)
+            if read_result.error:
+                return _tool_error("apply_diff", runtime.tool_call_id, f"Error: {read_result.error}")
+            if read_result.file_data is None:
+                return _tool_error("apply_diff", runtime.tool_call_id, f"Error: no data returned for '{validated_path}'")
+            if read_result.file_data.get("encoding", "utf-8") != "utf-8":
+                return _tool_error("apply_diff", runtime.tool_call_id, "Error: apply_diff only supports UTF-8 text files")
+
+            updated_content, apply_error = _apply_unified_diff_text(read_result.file_data["content"], diff)
+            if apply_error is not None or updated_content is None:
+                return _tool_error(
+                    "apply_diff",
+                    runtime.tool_call_id,
+                    "Failed to apply diff with Python fallback.\n"
+                    f"Error: {apply_error or 'unknown error'}\n"
+                    "Ensure diff is in unified format and applies cleanly.",
+                )
+
+            write_result = await resolved_backend.awrite(validated_path, updated_content)
+            if write_result.error:
+                return _tool_error("apply_diff", runtime.tool_call_id, f"Error: {write_result.error}")
+
+            return ToolMessage(
+                content=f"Applied diff to {validated_path}",
+                name="apply_diff",
+                tool_call_id=runtime.tool_call_id,
+                status="success",
+            )
+
+        return StructuredTool.from_function(
+            name="apply_diff",
+            description=tool_description,
+            func=sync_apply_diff,
+            coroutine=async_apply_diff,
+            infer_schema=False,
+            args_schema=ApplyDiffSchema,
         )
 
     def _create_delete_tool(self) -> BaseTool:  # noqa: C901, PLR0915  # Tool wiring + permission/support handling

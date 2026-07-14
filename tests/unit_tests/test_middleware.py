@@ -25,6 +25,7 @@ from soothe_deepagents.backends.protocol import (
     ExecuteResponse,
     GlobResult,
     GrepResult,
+    LsResult,
     ReadResult,
     SandboxBackendProtocol,
 )
@@ -128,27 +129,27 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware()
         assert isinstance(middleware.backend, StateBackend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 12  # All tools including execute and new surgical fs tools
+        assert len(middleware.tools) == 13  # All tools including execute and new surgical fs tools
 
     def test_init_with_composite_backend(self):
         backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
         middleware = FilesystemMiddleware(backend=backend)
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 12  # All tools including execute and new surgical fs tools
+        assert len(middleware.tools) == 13  # All tools including execute and new surgical fs tools
 
     def test_init_custom_system_prompt_default(self):
         middleware = FilesystemMiddleware(system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, StateBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 12  # All tools including execute and new surgical fs tools
+        assert len(middleware.tools) == 13  # All tools including execute and new surgical fs tools
 
     def test_init_custom_system_prompt_with_composite(self):
         backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
         middleware = FilesystemMiddleware(backend=backend, system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 12  # All tools including execute and new surgical fs tools
+        assert len(middleware.tools) == 13  # All tools including execute and new surgical fs tools
 
     def test_init_custom_tool_descriptions_default(self):
         middleware = FilesystemMiddleware(custom_tool_descriptions={"ls": "Custom ls tool description"})
@@ -190,6 +191,105 @@ class TestFilesystemMiddleware:
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
         result = ls_tool.invoke({"runtime": _runtime(), "path": "/"})
         assert result.content == "No files found"
+
+    def test_file_info_root_is_stable_across_repeated_calls(self):
+        """Repeated root lookups return the same directory metadata."""
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
+        file_info_tool = next(tool for tool in middleware.tools if tool.name == "file_info")
+
+        first = file_info_tool.invoke({"runtime": _runtime("fi1"), "path": "/"})
+        second = file_info_tool.invoke({"runtime": _runtime("fi2"), "path": "/"})
+
+        assert isinstance(first, ToolMessage)
+        assert first.status == "success"
+        assert first.content == "Path: /\nType: directory"
+        assert second.content == first.content
+
+    def test_file_info_reports_directory_with_trailing_slash_path(self):
+        """Directory lookups remain stable when the requested path ends with '/'."""
+        files = {
+            "/docs/readme.md": FileData(
+                content=["hello"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            )
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend, system_prompt="")
+        file_info_tool = next(tool for tool in middleware.tools if tool.name == "file_info")
+
+        result = file_info_tool.invoke({"runtime": _runtime("fi3"), "path": "/docs/"})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert "Path: /docs" in result.content
+        assert "Type: directory" in result.content
+
+    def test_file_info_missing_path_returns_not_found(self):
+        backend, _ = _make_backend({})
+        middleware = FilesystemMiddleware(backend=backend, system_prompt="")
+        file_info_tool = next(tool for tool in middleware.tools if tool.name == "file_info")
+
+        result = file_info_tool.invoke({"runtime": _runtime("fi4"), "path": "/ghost.txt"})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert result.content == "Error: file not found: /ghost.txt"
+
+    def test_file_info_backend_lookup_error_surfaces_to_tool_result(self):
+        backend, _ = _make_backend({})
+        middleware = FilesystemMiddleware(backend=backend, system_prompt="")
+        file_info_tool = next(tool for tool in middleware.tools if tool.name == "file_info")
+        backend_obj = middleware._get_backend(_runtime())
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "ls", return_value=LsResult(error="listing unavailable")),
+        ):
+            result = file_info_tool.invoke({"runtime": _runtime("fi5"), "path": "/docs"})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert result.content == "Error: listing unavailable"
+
+    def test_file_info_permission_denied_returns_error(self):
+        files = {
+            "/docs/readme.md": FileData(
+                content=["hello"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            )
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(
+            backend=backend,
+            system_prompt="",
+            _permissions=[FilesystemPermission(operations=["read"], paths=["/**"], mode="deny")],
+        )
+        file_info_tool = next(tool for tool in middleware.tools if tool.name == "file_info")
+
+        result = file_info_tool.invoke({"runtime": _runtime("fi6"), "path": "/docs/readme.md"})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert result.content == "Error: permission denied for read on /docs/readme.md"
+
+    def test_file_info_ignores_non_standard_metadata_types(self):
+        """Unexpected optional metadata types do not break formatting."""
+        backend, _ = _make_backend({})
+        middleware = FilesystemMiddleware(backend=backend, system_prompt="")
+        file_info_tool = next(tool for tool in middleware.tools if tool.name == "file_info")
+        malformed_entry = {
+            "path": "/notes.txt",
+            "is_dir": False,
+            "size": "huge",
+            "modified_at": 123,
+        }
+        with patch.object(middleware, "_find_path_info", return_value=(malformed_entry, None)):
+            result = file_info_tool.invoke({"runtime": _runtime("fi7"), "path": "/notes.txt"})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert result.content == "Path: /notes.txt\nType: file"
 
     def test_ls_shortterm_with_path(self):
         files = {
@@ -2405,6 +2505,60 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert result.status == "error"
         assert "traversal" in result.content
+
+    def test_apply_diff_tool_updates_file_content(self):
+        backend, _ = _make_backend(
+            {
+                "/test.txt": FileData(
+                    content="old content\n",
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                )
+            }
+        )
+        middleware = FilesystemMiddleware(backend=backend, system_prompt="")
+        apply_diff_tool = next(tool for tool in middleware.tools if tool.name == "apply_diff")
+        diff = "--- test.txt\n+++ test.txt\n@@ -1 +1 @@\n-old content\n+new content\n"
+
+        result = apply_diff_tool.invoke(
+            {
+                "file_path": "/test.txt",
+                "diff": diff,
+                "runtime": _runtime("ad1"),
+            }
+        )
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert "Applied diff" in result.content
+        read_result = backend.read("/test.txt", offset=0, limit=10)
+        assert read_result.file_data is not None
+        assert read_result.file_data["content"] == "new content\n"
+
+    def test_apply_diff_tool_rejects_invalid_diff(self):
+        backend, _ = _make_backend(
+            {
+                "/test.txt": FileData(
+                    content="old content\n",
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                )
+            }
+        )
+        middleware = FilesystemMiddleware(backend=backend, system_prompt="")
+        apply_diff_tool = next(tool for tool in middleware.tools if tool.name == "apply_diff")
+
+        result = apply_diff_tool.invoke(
+            {
+                "file_path": "/test.txt",
+                "diff": "invalid diff",
+                "runtime": _runtime("ad2"),
+            }
+        )
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "Failed to apply diff with Python fallback" in result.content
 
     def test_execute_tool_output_formatting(self):
         """Test execute tool formats output correctly."""

@@ -29,6 +29,7 @@ class TestFilesystemToolSchemas:
             "edit_lines": ["file_path", "start_line", "end_line", "new_content"],
             "insert_lines": ["file_path", "line", "content"],
             "delete_lines": ["file_path", "start_line", "end_line"],
+            "apply_diff": ["file_path", "diff"],
             "delete": ["file_path", "backup", "backup_dir"],
             "glob": ["pattern", "path"],
             "grep": ["pattern", "path", "glob", "output_mode"],
