@@ -50,6 +50,14 @@ Use a **plain tool** when:
 from soothe_deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from soothe_deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from soothe_deepagents.middleware.llm_call_policy import LLMCallPolicyConfig, run_llm_call_with_policy
+from soothe_deepagents.middleware.llm_rate_limit import (
+    EnhancedTimeoutError,
+    LLMRateLimitMiddleware,
+    LLMRateLimitRegistry,
+    calc_rate_limit_backoff,
+    effective_llm_call_timeout,
+    resolve_llm_budget_key,
+)
 from soothe_deepagents.middleware.memory import MemoryMiddleware
 from soothe_deepagents.middleware.reliability import (
     InvalidToolHintsMiddleware,
@@ -93,12 +101,15 @@ __all__ = [
     "CriterionEval",
     "CriterionFail",
     "CriterionPass",
+    "EnhancedTimeoutError",
     "FilesystemMiddleware",
     "FilesystemPermission",
     "GraderResponse",
     "GraderVerdict",
     "InvalidToolHintsMiddleware",
     "LLMCallPolicyConfig",
+    "LLMRateLimitMiddleware",
+    "LLMRateLimitRegistry",
     "MemoryMiddleware",
     "NetworkToolErrorsMiddleware",
     "RubricEvaluation",
@@ -112,6 +123,9 @@ __all__ = [
     "SummarizationToolMiddleware",
     "ToolOutputCapMiddleware",
     "ToolTimeoutMiddleware",
+    "calc_rate_limit_backoff",
     "create_summarization_tool_middleware",
+    "effective_llm_call_timeout",
+    "resolve_llm_budget_key",
     "run_llm_call_with_policy",
 ]
