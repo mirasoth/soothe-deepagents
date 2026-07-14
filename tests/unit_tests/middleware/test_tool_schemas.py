@@ -26,7 +26,7 @@ class TestFilesystemToolSchemas:
             "file_info": ["path"],
             "write_file": ["file_path", "content"],
             "edit_file": ["file_path", "old_string", "new_string", "replace_all"],
-            "edit_file_lines": ["file_path", "start_line", "end_line", "new_content"],
+            "edit_lines": ["file_path", "start_line", "end_line", "new_content"],
             "insert_lines": ["file_path", "line", "content"],
             "delete_lines": ["file_path", "start_line", "end_line"],
             "delete": ["file_path", "backup", "backup_dir"],

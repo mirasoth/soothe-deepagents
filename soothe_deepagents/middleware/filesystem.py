@@ -109,7 +109,7 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
     "grep": "read",
     "write_file": "write",
     "edit_file": "write",
-    "edit_file_lines": "write",
+    "edit_lines": "write",
     "insert_lines": "write",
     "delete_lines": "write",
     "delete": "write",
@@ -747,7 +747,7 @@ class FileInfoSchema(BaseModel):
 
 
 class EditFileLinesSchema(BaseModel):
-    """Input schema for the `edit_file_lines` tool."""
+    """Input schema for the `edit_lines` tool."""
 
     file_path: str = Field(description="Absolute path to the file to edit. Must be absolute, not relative.")
 
@@ -1004,7 +1004,7 @@ FsToolName = Literal[
     "file_info",
     "write_file",
     "edit_file",
-    "edit_file_lines",
+    "edit_lines",
     "insert_lines",
     "delete_lines",
     "delete",
@@ -1020,7 +1020,7 @@ _FS_TOOL_ORDER: tuple[str, ...] = (
     "file_info",
     "write_file",
     "edit_file",
-    "edit_file_lines",
+    "edit_lines",
     "insert_lines",
     "delete_lines",
     "delete",
@@ -1034,7 +1034,7 @@ _FS_TOOL_DESCRIPTION_LINES: dict[str, str] = {
     "file_info": "file_info: inspect metadata for a file or directory",
     "write_file": "write_file: write to a file in the filesystem",
     "edit_file": "edit_file: edit a file in the filesystem",
-    "edit_file_lines": "edit_file_lines: replace a line range in a text file",
+    "edit_lines": "edit_lines: replace a line range in a text file",
     "insert_lines": "insert_lines: insert text at a line in a text file",
     "delete_lines": "delete_lines: delete a line range from a text file",
     "delete": "delete: delete a file or directory (recursively) from the filesystem",
@@ -1377,7 +1377,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 ``"all"` indicates all tools. If unset, defaults to `"all"`.
                 Pass a list containing any of `"ls"`, `"read_file"`,
                 `"file_info"`, `"write_file"`, `"edit_file"`,
-                `"edit_file_lines"`, `"insert_lines"`, `"delete_lines"`,
+                `"edit_lines"`, `"insert_lines"`, `"delete_lines"`,
                 `"delete"`, `"glob"`, `"grep"`, `"execute"` to restrict the
                 model to only those tools; all others are hidden. `read_file`
                 must be included in any list. Backend capability checks for
@@ -1453,7 +1453,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             self._create_file_info_tool(),
             self._create_write_file_tool(),
             self._create_edit_file_tool(),
-            self._create_edit_file_lines_tool(),
+            self._create_edit_lines_tool(),
             self._create_insert_lines_tool(),
             self._create_delete_lines_tool(),
             self._create_delete_tool(),
@@ -2166,46 +2166,46 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=EditFileSchema,
         )
 
-    def _create_edit_file_lines_tool(self) -> BaseTool:  # noqa: C901, PLR0915
-        """Create the edit_file_lines tool."""
-        tool_description = self._custom_tool_descriptions.get("edit_file_lines") or EDIT_FILE_LINES_TOOL_DESCRIPTION
+    def _create_edit_lines_tool(self) -> BaseTool:  # noqa: C901, PLR0915
+        """Create the edit_lines tool."""
+        tool_description = self._custom_tool_descriptions.get("edit_lines") or EDIT_FILE_LINES_TOOL_DESCRIPTION
 
-        def sync_edit_file_lines(  # noqa: C901, PLR0911
+        def sync_edit_lines(  # noqa: C901, PLR0911
             file_path: str,
             start_line: int,
             end_line: int,
             new_content: str,
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
-            """Synchronous wrapper for edit_file_lines tool."""
+            """Synchronous wrapper for edit_lines tool."""
             resolved_backend = self._get_backend(runtime)
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
-                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: {e}")
+                return _tool_error("edit_lines", runtime.tool_call_id, f"Error: {e}")
 
             if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
-                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: permission denied for write on {validated_path}")
+                return _tool_error("edit_lines", runtime.tool_call_id, f"Error: permission denied for write on {validated_path}")
 
             if start_line < 1 or end_line < start_line:
-                return _tool_error("edit_file_lines", runtime.tool_call_id, "Error: invalid line range; expected 1 <= start_line <= end_line")
+                return _tool_error("edit_lines", runtime.tool_call_id, "Error: invalid line range; expected 1 <= start_line <= end_line")
 
             read_result = resolved_backend.read(validated_path, offset=0, limit=1_000_000)
             if read_result.error:
-                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: {read_result.error}")
+                return _tool_error("edit_lines", runtime.tool_call_id, f"Error: {read_result.error}")
             if read_result.file_data is None:
-                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: no data returned for '{validated_path}'")
+                return _tool_error("edit_lines", runtime.tool_call_id, f"Error: no data returned for '{validated_path}'")
             if read_result.file_data.get("encoding", "utf-8") != "utf-8":
-                return _tool_error("edit_file_lines", runtime.tool_call_id, "Error: edit_file_lines only supports UTF-8 text files")
+                return _tool_error("edit_lines", runtime.tool_call_id, "Error: edit_lines only supports UTF-8 text files")
 
             original_content = read_result.file_data["content"]
             lines = original_content.splitlines(keepends=True)
             total_lines = len(lines)
             if total_lines == 0:
-                return _tool_error("edit_file_lines", runtime.tool_call_id, "Error: file has no lines to replace")
+                return _tool_error("edit_lines", runtime.tool_call_id, "Error: file has no lines to replace")
             if start_line > total_lines or end_line > total_lines:
                 return _tool_error(
-                    "edit_file_lines",
+                    "edit_lines",
                     runtime.tool_call_id,
                     f"Error: line range {start_line}-{end_line} exceeds file length ({total_lines} lines)",
                 )
@@ -2220,51 +2220,51 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             updated_content = "".join(lines)
             write_result = resolved_backend.write(validated_path, updated_content)
             if write_result.error:
-                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: {write_result.error}")
+                return _tool_error("edit_lines", runtime.tool_call_id, f"Error: {write_result.error}")
 
             return ToolMessage(
                 content=f"Updated {validated_path}: replaced lines {start_line}-{end_line} ({removed} removed, {added} added)",
-                name="edit_file_lines",
+                name="edit_lines",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
             )
 
-        async def async_edit_file_lines(  # noqa: C901, PLR0911
+        async def async_edit_lines(  # noqa: C901, PLR0911
             file_path: str,
             start_line: int,
             end_line: int,
             new_content: str,
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
-            """Asynchronous wrapper for edit_file_lines tool."""
+            """Asynchronous wrapper for edit_lines tool."""
             resolved_backend = self._get_backend(runtime)
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
-                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: {e}")
+                return _tool_error("edit_lines", runtime.tool_call_id, f"Error: {e}")
 
             if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
-                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: permission denied for write on {validated_path}")
+                return _tool_error("edit_lines", runtime.tool_call_id, f"Error: permission denied for write on {validated_path}")
 
             if start_line < 1 or end_line < start_line:
-                return _tool_error("edit_file_lines", runtime.tool_call_id, "Error: invalid line range; expected 1 <= start_line <= end_line")
+                return _tool_error("edit_lines", runtime.tool_call_id, "Error: invalid line range; expected 1 <= start_line <= end_line")
 
             read_result = await resolved_backend.aread(validated_path, offset=0, limit=1_000_000)
             if read_result.error:
-                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: {read_result.error}")
+                return _tool_error("edit_lines", runtime.tool_call_id, f"Error: {read_result.error}")
             if read_result.file_data is None:
-                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: no data returned for '{validated_path}'")
+                return _tool_error("edit_lines", runtime.tool_call_id, f"Error: no data returned for '{validated_path}'")
             if read_result.file_data.get("encoding", "utf-8") != "utf-8":
-                return _tool_error("edit_file_lines", runtime.tool_call_id, "Error: edit_file_lines only supports UTF-8 text files")
+                return _tool_error("edit_lines", runtime.tool_call_id, "Error: edit_lines only supports UTF-8 text files")
 
             original_content = read_result.file_data["content"]
             lines = original_content.splitlines(keepends=True)
             total_lines = len(lines)
             if total_lines == 0:
-                return _tool_error("edit_file_lines", runtime.tool_call_id, "Error: file has no lines to replace")
+                return _tool_error("edit_lines", runtime.tool_call_id, "Error: file has no lines to replace")
             if start_line > total_lines or end_line > total_lines:
                 return _tool_error(
-                    "edit_file_lines",
+                    "edit_lines",
                     runtime.tool_call_id,
                     f"Error: line range {start_line}-{end_line} exceeds file length ({total_lines} lines)",
                 )
@@ -2279,20 +2279,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             updated_content = "".join(lines)
             write_result = await resolved_backend.awrite(validated_path, updated_content)
             if write_result.error:
-                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: {write_result.error}")
+                return _tool_error("edit_lines", runtime.tool_call_id, f"Error: {write_result.error}")
 
             return ToolMessage(
                 content=f"Updated {validated_path}: replaced lines {start_line}-{end_line} ({removed} removed, {added} added)",
-                name="edit_file_lines",
+                name="edit_lines",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
             )
 
         return StructuredTool.from_function(
-            name="edit_file_lines",
+            name="edit_lines",
             description=tool_description,
-            func=sync_edit_file_lines,
-            coroutine=async_edit_file_lines,
+            func=sync_edit_lines,
+            coroutine=async_edit_lines,
             infer_schema=False,
             args_schema=EditFileLinesSchema,
         )

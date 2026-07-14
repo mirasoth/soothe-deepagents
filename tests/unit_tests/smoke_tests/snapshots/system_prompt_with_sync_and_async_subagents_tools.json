@@ -166,7 +166,7 @@
   {
     "function": {
       "description": "Replaces a line range in a text file.\n\nUsage:\n- Line numbers are 1-indexed and inclusive.\n- Best for surgical edits when exact-string replacement is brittle.",
-      "name": "edit_file_lines",
+      "name": "edit_lines",
       "parameters": {
         "properties": {
           "end_line": {
