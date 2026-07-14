@@ -276,6 +276,39 @@ class TestToolDescriptionOverrideWiring:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
+    def test_create_deep_agent_passes_filesystem_tools_to_default_middleware(self) -> None:
+        """filesystem_tools should be forwarded to default FilesystemMiddleware instances."""
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("soothe_deepagents.graph.resolve_model", return_value=fake_model),
+            patch("soothe_deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]) as mock_fs,
+            patch("soothe_deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
+            patch("soothe_deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
+            patch("soothe_deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
+            patch("soothe_deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
+            patch("soothe_deepagents.graph.create_agent", return_value=fake_agent),
+        ):
+            result = create_deep_agent(
+                model="testprov:some-model",
+                filesystem_tools=("ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep"),
+            )
+
+        assert result == "compiled-agent"
+        assert mock_fs.call_count == 2
+        for call in mock_fs.call_args_list:
+            assert call.kwargs["tools"] == [
+                "ls",
+                "read_file",
+                "write_file",
+                "edit_file",
+                "delete",
+                "glob",
+                "grep",
+            ]
+
 
 class TestGeneralPurposeSubagentProfileWiring:
     """Tests for harness-level general-purpose subagent controls."""
@@ -348,6 +381,24 @@ class TestGeneralPurposeSubagentProfileWiring:
                             "system_prompt": "Do work.",
                         }
                     ],
+                )
+            assert "task" in agent.nodes["tools"].bound._tools_by_name
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_enable_general_purpose_subagent_overrides_profile_disable(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "testprov",
+                HarnessProfile(general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with patch("soothe_deepagents.graph.resolve_model", return_value=fake_model):
+                agent = create_deep_agent(
+                    model="testprov:some-model",
+                    enable_general_purpose_subagent=True,
                 )
             assert "task" in agent.nodes["tools"].bound._tools_by_name
         finally:

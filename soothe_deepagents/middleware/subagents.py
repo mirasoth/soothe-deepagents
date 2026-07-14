@@ -434,6 +434,20 @@ GENERAL_PURPOSE_SUBAGENT: SubAgent = {
 }
 """Base spec for general-purpose subagent (caller adds model, tools, middleware)."""
 
+_GP_TASK_DESC_SECTION_START = "7. When only the general-purpose agent"
+_GP_TASK_DESC_SECTION_END = "### Example usage with custom agents:"
+
+
+def _task_tool_description_template(base_template: str, *, include_general_purpose: bool) -> str:
+    """Return task tool description with optional general-purpose guidance."""
+    if include_general_purpose:
+        return base_template
+    start = base_template.find(_GP_TASK_DESC_SECTION_START)
+    end = base_template.find(_GP_TASK_DESC_SECTION_END)
+    if start == -1 or end == -1 or end <= start:
+        return base_template
+    return base_template[:start].rstrip() + "\n\n" + base_template[end:]
+
 
 @contextlib.contextmanager
 def _subagent_tracing_context() -> Generator[None, None, None]:
@@ -533,6 +547,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
     task_description: str | None = None,
     *,
     private_state_keys: frozenset[str] = frozenset(),
+    parent_owned_state_keys: frozenset[str] = frozenset(),
     state_schema: type | None = None,
 ) -> BaseTool:
     """Create a task tool from subagent specs.
@@ -543,6 +558,8 @@ def _build_task_tool(  # noqa: C901, PLR0915
             uses default template. Supports `{available_agents}` placeholder.
         private_state_keys: State keys marked with `PrivateStateAttr` that
             should be stripped from parent state before invoking subagents.
+        parent_owned_state_keys: State keys owned by the parent graph that
+            should not be merged back from subagent results.
         state_schema: Base graph state schema forwarded to raw subagent specs.
 
     Returns:
@@ -586,15 +603,21 @@ def _build_task_tool(  # noqa: C901, PLR0915
 
     compiled_subagents = [_compile_spec(spec) for spec in subagents]
     subagents_by_name = {spec["name"]: spec for spec in subagents}
+    include_general_purpose = GENERAL_PURPOSE_SUBAGENT["name"] in subagents_by_name
 
     # Build the graphs dict and descriptions from the unified spec list
     subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in compiled_subagents}
 
     subagent_description_str = "\n".join(f"- {s['name']}: {s['description']}" for s in compiled_subagents)
+    all_excluded_keys = _EXCLUDED_STATE_KEYS | private_state_keys | parent_owned_state_keys
 
     # Use custom description if provided, otherwise use default template
+    description_template = _task_tool_description_template(
+        TASK_TOOL_DESCRIPTION,
+        include_general_purpose=include_general_purpose,
+    )
     if task_description is None:
-        description = TASK_TOOL_DESCRIPTION.format(available_agents=subagent_description_str)
+        description = description_template.format(available_agents=subagent_description_str)
     elif "{available_agents}" in task_description:
         description = task_description.format(available_agents=subagent_description_str)
     else:
@@ -610,7 +633,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             )
             raise ValueError(error_msg)
 
-        state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS and k not in private_state_keys}
+        state_update = {k: v for k, v in result.items() if k not in all_excluded_keys}
 
         structured = result.get("structured_response")
         if structured is not None:
@@ -666,6 +689,12 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
         subagent_state = {k: v for k, v in subagent_state.items() if k not in private_state_keys}
         subagent_state["messages"] = [HumanMessage(content=description)]
+        config = runtime.config
+        configurable = config.get("configurable") if isinstance(config, dict) else None
+        if isinstance(configurable, dict):
+            workspace = configurable.get("workspace")
+            if workspace is not None and "workspace" not in subagent_state:
+                subagent_state["workspace"] = workspace
         return subagent, subagent_state
 
     def task(
@@ -799,6 +828,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
         task_description: str | None = None,
         private_state_keys: frozenset[str] | None = None,
+        parent_owned_state_keys: frozenset[str] | None = None,
         state_schema: type | None = None,
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
@@ -810,6 +840,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self._backend = backend
         self._subagents = subagents
         self._private_state_keys = private_state_keys or frozenset()
+        self._parent_owned_state_keys = parent_owned_state_keys or frozenset()
         self._task_description = task_description
         self._state_schema = state_schema
         self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagents)
@@ -820,6 +851,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             self._subagents,
             task_description,
             private_state_keys=self._private_state_keys,
+            parent_owned_state_keys=self._parent_owned_state_keys,
             state_schema=self._state_schema,
         )
 
@@ -844,6 +876,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             self._subagents,
             task_description=self._task_description,
             private_state_keys=value,
+            parent_owned_state_keys=self._parent_owned_state_keys,
             state_schema=self._state_schema,
         )
         self.tools = [task_tool]

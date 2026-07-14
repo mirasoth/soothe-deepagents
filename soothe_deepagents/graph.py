@@ -8,7 +8,7 @@ subagent, and summarization middleware.
 import logging
 from collections.abc import Callable, Sequence
 from importlib import import_module
-from typing import Annotated, Any, Required, TypedDict, cast
+from typing import Annotated, Any, Literal, Required, TypedDict, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
@@ -48,7 +48,11 @@ from soothe_deepagents.middleware._fs_interrupt import _build_interrupt_on_from_
 from soothe_deepagents.middleware._state import private_state_field_names
 from soothe_deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from soothe_deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
-from soothe_deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
+from soothe_deepagents.middleware.filesystem import (
+    FilesystemMiddleware,
+    FilesystemPermission,
+    FsToolName,
+)
 from soothe_deepagents.middleware.memory import MemoryMiddleware
 from soothe_deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from soothe_deepagents.middleware.reliability import (
@@ -430,6 +434,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     permissions: list[FilesystemPermission] | None = None,
     backend: BackendProtocol | BackendFactory | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
+    enable_general_purpose_subagent: bool | None = None,
+    filesystem_tools: Sequence[FsToolName] | Literal["all"] | None = None,
+    parent_owned_state_keys: frozenset[str] | None = None,
     reliability_middleware: ReliabilityMiddlewareConfig | None = None,
     response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
     state_schema: type[DeepAgentState] | None = None,
@@ -656,6 +663,25 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             For example, `interrupt_on={"edit_file": True}` pauses before
             every edit.
+        enable_general_purpose_subagent: Optional per-call override for the
+            default `general-purpose` subagent.
+
+            - `None` (default): defer to the active harness profile.
+            - `True`: always auto-add the default general-purpose subagent
+                unless the caller already provided one.
+            - `False`: never auto-add the default general-purpose subagent.
+        filesystem_tools: Optional built-in filesystem tool selection forwarded
+            to default `FilesystemMiddleware` instances for the main agent and
+            generated synchronous subagents.
+
+            Pass `"all"` to keep all built-ins, or a sequence of tool names
+            such as `("ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep")`.
+            This enables excluding `execute` without relying on profiles.
+        parent_owned_state_keys: Optional state keys that are owned by the
+            parent graph and must not be merged back from subagent task results.
+
+            Useful for channels where multiple subagent writes in one step are
+            invalid (for example, LastValue channels like `workspace`).
         reliability_middleware: Optional reliability middleware toggles.
 
             All entries are opt-in and disabled by default to preserve existing behavior.
@@ -797,6 +823,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     )
 
     backend = backend if backend is not None else StateBackend()
+    normalized_filesystem_tools: list[FsToolName] | Literal["all"] | None
+    normalized_filesystem_tools = (
+        cast('list[FsToolName] | Literal["all"] | None', filesystem_tools)
+        if filesystem_tools is None or filesystem_tools == "all"
+        else list(filesystem_tools)
+    )
 
     # Process caller-supplied subagents first so the decision of whether to
     # auto-add the default general-purpose subagent can factor in an explicit
@@ -830,6 +862,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
                     _permissions=subagent_permissions,
+                    tools=normalized_filesystem_tools,
                 ),
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
@@ -910,13 +943,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # invoking factory-based `extra_middleware` whose output would be thrown
     # away.
     gp_profile = _profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
-    if gp_profile.enabled is not False and not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
+    gp_enabled = gp_profile.enabled is not False
+    if enable_general_purpose_subagent is not None:
+        gp_enabled = enable_general_purpose_subagent
+    if gp_enabled and not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
         gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
             TodoListMiddleware(),
             FilesystemMiddleware(
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
                 _permissions=permissions,
+                tools=normalized_filesystem_tools,
             ),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
@@ -988,6 +1025,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
             _permissions=permissions,
+            tools=normalized_filesystem_tools,
         )
     )
     sub_agent_middleware: SubAgentMiddleware | None = None
@@ -1001,6 +1039,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # see which subagents exist. None (default) uses the built-in
             # template. Stale keys silently no-op if the tool is renamed.
             task_description=_profile.tool_description_overrides.get("task"),
+            parent_owned_state_keys=parent_owned_state_keys,
             state_schema=state_schema,
         )
         deepagent_middleware.append(sub_agent_middleware)

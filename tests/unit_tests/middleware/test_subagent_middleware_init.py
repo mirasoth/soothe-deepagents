@@ -506,3 +506,100 @@ class TestSubagentMiddlewareInit:
         )
         # This would error if the middleware was accumulated incorrectly
         assert agent is not None
+
+    def test_task_tool_injects_workspace_from_runtime_config(self) -> None:
+        """Task tool should pass configurable.workspace through subagent state."""
+        captured_state: dict[str, Any] = {}
+
+        class _Runnable:
+            def with_config(self, _config: dict[str, object]) -> "_Runnable":
+                return self
+
+            def invoke(
+                self,
+                state: dict[str, object],
+                config: object = None,
+            ) -> dict[str, object]:
+                del config
+                captured_state.clear()
+                captured_state.update(state)
+                return {"messages": [AIMessage(content="done")]}
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Worker",
+                    "runnable": _Runnable(),
+                }
+            ],
+        )
+        task_tool = middleware.tools[0]
+        runtime = ToolRuntime(
+            state={},
+            context={},
+            config={"configurable": {"workspace": "/workspace-a"}},
+            stream_writer=lambda _chunk: None,
+            tools=[task_tool],
+            tool_call_id="call_worker",
+            store=None,
+        )
+
+        task_tool.func(
+            description="Do work",
+            subagent_type="worker",
+            runtime=runtime,
+        )
+
+        assert captured_state.get("workspace") == "/workspace-a"
+
+    def test_task_tool_excludes_parent_owned_state_keys_from_merge(self) -> None:
+        """Parent-owned state keys should not be merged back from subagent output."""
+
+        class _Runnable:
+            def with_config(self, _config: dict[str, object]) -> "_Runnable":
+                return self
+
+            def invoke(
+                self,
+                state: dict[str, object],
+                config: object = None,
+            ) -> dict[str, object]:
+                del state, config
+                return {
+                    "messages": [AIMessage(content="done")],
+                    "workspace": "/workspace-a",
+                    "task_notes": "keep-me",
+                }
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Worker",
+                    "runnable": _Runnable(),
+                }
+            ],
+            parent_owned_state_keys=frozenset({"workspace"}),
+        )
+        task_tool = middleware.tools[0]
+        runtime = ToolRuntime(
+            state={},
+            context={},
+            config={"configurable": {}},
+            stream_writer=lambda _chunk: None,
+            tools=[task_tool],
+            tool_call_id="call_worker",
+            store=None,
+        )
+
+        result = task_tool.func(
+            description="Do work",
+            subagent_type="worker",
+            runtime=runtime,
+        )
+
+        assert "workspace" not in result.update
+        assert result.update["task_notes"] == "keep-me"
