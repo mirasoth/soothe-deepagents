@@ -12,6 +12,7 @@ import uuid
 from binascii import Error as BinasciiError
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NotRequired, cast
 
@@ -103,10 +104,14 @@ FilesystemOperation = Literal["read", "write"]
 _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
     "ls": "read",
     "read_file": "read",
+    "file_info": "read",
     "glob": "read",
     "grep": "read",
     "write_file": "write",
     "edit_file": "write",
+    "edit_file_lines": "write",
+    "insert_lines": "write",
+    "delete_lines": "write",
     "delete": "write",
 }
 """Default mapping from filesystem tool name to its operation category."""
@@ -724,6 +729,57 @@ class DeleteSchema(BaseModel):
 
     file_path: str = Field(description="Absolute path to the file to delete. Must be absolute, not relative.")
 
+    backup: bool = Field(
+        default=False,
+        description="If True and the path is a text file, create a timestamped backup before deleting.",
+    )
+
+    backup_dir: str | None = Field(
+        default=None,
+        description="Optional absolute directory path for backups. Defaults to `<file-parent>/.backups/`.",
+    )
+
+
+class FileInfoSchema(BaseModel):
+    """Input schema for the `file_info` tool."""
+
+    path: str = Field(description="Absolute path to inspect. Must be absolute, not relative.")
+
+
+class EditFileLinesSchema(BaseModel):
+    """Input schema for the `edit_file_lines` tool."""
+
+    file_path: str = Field(description="Absolute path to the file to edit. Must be absolute, not relative.")
+
+    start_line: int = Field(description="First line to replace (1-indexed, inclusive).")
+
+    end_line: int = Field(description="Last line to replace (1-indexed, inclusive). Must be >= start_line.")
+
+    new_content: str = Field(description="Replacement content for the selected line range.")
+
+
+class InsertLinesSchema(BaseModel):
+    """Input schema for the `insert_lines` tool."""
+
+    file_path: str = Field(description="Absolute path to the file to edit. Must be absolute, not relative.")
+
+    line: int = Field(
+        default=1,
+        description="Line number where insertion begins (1-indexed). Valid range: 1 to total_lines+1.",
+    )
+
+    content: str = Field(description="Content to insert at the specified line.")
+
+
+class DeleteLinesSchema(BaseModel):
+    """Input schema for the `delete_lines` tool."""
+
+    file_path: str = Field(description="Absolute path to the file to edit. Must be absolute, not relative.")
+
+    start_line: int = Field(description="First line to delete (1-indexed, inclusive).")
+
+    end_line: int = Field(description="Last line to delete (1-indexed, inclusive). Must be >= start_line.")
+
 
 class GlobSchema(BaseModel):
     """Input schema for the `glob` tool."""
@@ -832,7 +888,36 @@ Usage:
 - Permanently removes the file or directory at the given absolute path.
 - Deleting a directory removes it and everything inside it, recursively. Prefer
   deleting a directory in one call over deleting each file individually.
+- Set `backup=true` to create a timestamped backup for UTF-8 text files before deletion.
 - This cannot be undone, so only delete paths you are sure are no longer needed.
+"""
+
+FILE_INFO_TOOL_DESCRIPTION = """Gets metadata for a file or directory.
+
+Usage:
+- Returns path type (`file`/`directory`) and available metadata like size/modified timestamp.
+- Useful for validating assumptions before editing or deleting a path.
+"""
+
+EDIT_FILE_LINES_TOOL_DESCRIPTION = """Replaces a line range in a text file.
+
+Usage:
+- Line numbers are 1-indexed and inclusive.
+- Best for surgical edits when exact-string replacement is brittle.
+"""
+
+INSERT_LINES_TOOL_DESCRIPTION = """Inserts content at a specific line in a text file.
+
+Usage:
+- `line=1` inserts at the top of the file.
+- `line=total_lines+1` appends at the end.
+"""
+
+DELETE_LINES_TOOL_DESCRIPTION = """Deletes a line range from a text file.
+
+Usage:
+- Line numbers are 1-indexed and inclusive.
+- Useful for removing obsolete blocks without replacing nearby content.
 """
 
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
@@ -913,16 +998,45 @@ Examples:
 Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
 If execution is not supported, the tool will return an error message."""
 
-FsToolName = Literal["ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"]
+FsToolName = Literal[
+    "ls",
+    "read_file",
+    "file_info",
+    "write_file",
+    "edit_file",
+    "edit_file_lines",
+    "insert_lines",
+    "delete_lines",
+    "delete",
+    "glob",
+    "grep",
+    "execute",
+]
 """Names of the built-in filesystem tools that can be passed to `FilesystemMiddleware(tools=...)`."""
 
-_FS_TOOL_ORDER: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep")
+_FS_TOOL_ORDER: tuple[str, ...] = (
+    "ls",
+    "read_file",
+    "file_info",
+    "write_file",
+    "edit_file",
+    "edit_file_lines",
+    "insert_lines",
+    "delete_lines",
+    "delete",
+    "glob",
+    "grep",
+)
 _ALL_FS_TOOL_NAMES: frozenset[str] = frozenset(_FS_TOOL_ORDER) | {"execute"}
 _FS_TOOL_DESCRIPTION_LINES: dict[str, str] = {
     "ls": "ls: list files in a directory (requires absolute path)",
     "read_file": "read_file: read a file from the filesystem",
+    "file_info": "file_info: inspect metadata for a file or directory",
     "write_file": "write_file: write to a file in the filesystem",
     "edit_file": "edit_file: edit a file in the filesystem",
+    "edit_file_lines": "edit_file_lines: replace a line range in a text file",
+    "insert_lines": "insert_lines: insert text at a line in a text file",
+    "delete_lines": "delete_lines: delete a line range from a text file",
     "delete": "delete: delete a file or directory (recursively) from the filesystem",
     "glob": 'glob: find files matching a pattern (e.g., "**/*.py")',
     "grep": "grep: search for text within files",
@@ -1262,12 +1376,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             tools: Allowlist of tool names to expose to the model.
                 ``"all"` indicates all tools. If unset, defaults to `"all"`.
                 Pass a list containing any of `"ls"`, `"read_file"`,
-                `"write_file"`, `"edit_file"`, `"delete"`, `"glob"`,
-                `"grep"`, `"execute"` to restrict the model to only those
-                tools; all others are hidden. `read_file` must be included
-                in any list. Backend capability checks for `execute` and
-                `delete` still apply; listing them when the backend does not
-                support them is a no-op.
+                `"file_info"`, `"write_file"`, `"edit_file"`,
+                `"edit_file_lines"`, `"insert_lines"`, `"delete_lines"`,
+                `"delete"`, `"glob"`, `"grep"`, `"execute"` to restrict the
+                model to only those tools; all others are hidden. `read_file`
+                must be included in any list. Backend capability checks for
+                `execute` and `delete` still apply; listing them when the
+                backend does not support them is a no-op.
             _permissions: Optional filesystem permission rules enforced directly
                 by this middleware's tool implementations.
 
@@ -1333,8 +1448,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self.tools = [
             self._create_ls_tool(),
             self._create_read_file_tool(),
+            self._create_file_info_tool(),
             self._create_write_file_tool(),
             self._create_edit_file_tool(),
+            self._create_edit_file_lines_tool(),
+            self._create_insert_lines_tool(),
+            self._create_delete_lines_tool(),
             self._create_delete_tool(),
             self._create_glob_tool(),
             self._create_grep_tool(),
@@ -1391,6 +1510,46 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             )
             return _resolve_backend(self.backend, runtime)
         return self.backend
+
+    @staticmethod
+    def _normalize_entry_path(path: str) -> str:
+        return "/" if path == "/" else path.rstrip("/")
+
+    def _find_path_info(self, resolved_backend: BackendProtocol, validated_path: str) -> tuple[FileInfo | None, str | None]:
+        """Resolve metadata for a path by listing its parent directory."""
+        if validated_path == "/":
+            return {"path": "/", "is_dir": True}, None
+        parent = str(PurePosixPath(validated_path).parent)
+        parent_result = resolved_backend.ls(parent)
+        if parent_result.error:
+            return None, parent_result.error
+        normalized_target = self._normalize_entry_path(validated_path)
+        entries = parent_result.entries or []
+        for entry in entries:
+            entry_path = entry.get("path")
+            if not entry_path:
+                continue
+            if self._normalize_entry_path(entry_path) == normalized_target:
+                return entry, None
+        return None, None
+
+    async def _afind_path_info(self, resolved_backend: BackendProtocol, validated_path: str) -> tuple[FileInfo | None, str | None]:
+        """Async version of `_find_path_info`."""
+        if validated_path == "/":
+            return {"path": "/", "is_dir": True}, None
+        parent = str(PurePosixPath(validated_path).parent)
+        parent_result = await resolved_backend.als(parent)
+        if parent_result.error:
+            return None, parent_result.error
+        normalized_target = self._normalize_entry_path(validated_path)
+        entries = parent_result.entries or []
+        for entry in entries:
+            entry_path = entry.get("path")
+            if not entry_path:
+                continue
+            if self._normalize_entry_path(entry_path) == normalized_target:
+                return entry, None
+        return None, None
 
     def _create_ls_tool(self) -> BaseTool:
         """Create the ls (list files) tool."""
@@ -1664,6 +1823,127 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=args_schema,
         )
 
+    def _create_file_info_tool(self) -> BaseTool:  # noqa: C901
+        """Create the file_info tool."""
+        tool_description = self._custom_tool_descriptions.get("file_info") or FILE_INFO_TOOL_DESCRIPTION
+
+        def sync_file_info(
+            path: str,
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> ToolMessage:
+            """Synchronous wrapper for file_info tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(path)
+            except ValueError as e:
+                return ToolMessage(
+                    content=f"Error: {e}",
+                    name="file_info",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            if _check_fs_permission(self._permissions, "read", validated_path) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for read on {validated_path}",
+                    name="file_info",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            entry, lookup_error = self._find_path_info(resolved_backend, validated_path)
+            if lookup_error:
+                return ToolMessage(
+                    content=f"Error: {lookup_error}",
+                    name="file_info",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            if entry is None:
+                return ToolMessage(
+                    content=f"Error: file not found: {validated_path}",
+                    name="file_info",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+
+            is_dir = bool(entry.get("is_dir", False))
+            lines = [f"Path: {validated_path}", f"Type: {'directory' if is_dir else 'file'}"]
+            size = entry.get("size")
+            if isinstance(size, int):
+                lines.append(f"Size: {size} bytes")
+            modified_at = entry.get("modified_at")
+            if isinstance(modified_at, str) and modified_at:
+                lines.append(f"Modified: {modified_at}")
+
+            return ToolMessage(
+                content="\n".join(lines),
+                name="file_info",
+                tool_call_id=runtime.tool_call_id,
+                status="success",
+            )
+
+        async def async_file_info(
+            path: str,
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> ToolMessage:
+            """Asynchronous wrapper for file_info tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(path)
+            except ValueError as e:
+                return ToolMessage(
+                    content=f"Error: {e}",
+                    name="file_info",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            if _check_fs_permission(self._permissions, "read", validated_path) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for read on {validated_path}",
+                    name="file_info",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            entry, lookup_error = await self._afind_path_info(resolved_backend, validated_path)
+            if lookup_error:
+                return ToolMessage(
+                    content=f"Error: {lookup_error}",
+                    name="file_info",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            if entry is None:
+                return ToolMessage(
+                    content=f"Error: file not found: {validated_path}",
+                    name="file_info",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+
+            is_dir = bool(entry.get("is_dir", False))
+            lines = [f"Path: {validated_path}", f"Type: {'directory' if is_dir else 'file'}"]
+            size = entry.get("size")
+            if isinstance(size, int):
+                lines.append(f"Size: {size} bytes")
+            modified_at = entry.get("modified_at")
+            if isinstance(modified_at, str) and modified_at:
+                lines.append(f"Modified: {modified_at}")
+
+            return ToolMessage(
+                content="\n".join(lines),
+                name="file_info",
+                tool_call_id=runtime.tool_call_id,
+                status="success",
+            )
+
+        return StructuredTool.from_function(
+            name="file_info",
+            description=tool_description,
+            func=sync_file_info,
+            coroutine=async_file_info,
+            infer_schema=False,
+            args_schema=FileInfoSchema,
+        )
+
     def _create_write_file_tool(self) -> BaseTool:
         """Create the write_file tool."""
         tool_description = self._custom_tool_descriptions.get("write_file") or WRITE_FILE_TOOL_DESCRIPTION
@@ -1852,13 +2132,365 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=EditFileSchema,
         )
 
-    def _create_delete_tool(self) -> BaseTool:  # Tool wiring + permission/support handling
+    def _create_edit_file_lines_tool(self) -> BaseTool:  # noqa: C901, PLR0915
+        """Create the edit_file_lines tool."""
+        tool_description = self._custom_tool_descriptions.get("edit_file_lines") or EDIT_FILE_LINES_TOOL_DESCRIPTION
+
+        def sync_edit_file_lines(  # noqa: C901, PLR0911
+            file_path: str,
+            start_line: int,
+            end_line: int,
+            new_content: str,
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> ToolMessage:
+            """Synchronous wrapper for edit_file_lines tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: {e}")
+
+            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: permission denied for write on {validated_path}")
+
+            if start_line < 1 or end_line < start_line:
+                return _tool_error("edit_file_lines", runtime.tool_call_id, "Error: invalid line range; expected 1 <= start_line <= end_line")
+
+            read_result = resolved_backend.read(validated_path, offset=0, limit=1_000_000)
+            if read_result.error:
+                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: {read_result.error}")
+            if read_result.file_data is None:
+                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: no data returned for '{validated_path}'")
+            if read_result.file_data.get("encoding", "utf-8") != "utf-8":
+                return _tool_error("edit_file_lines", runtime.tool_call_id, "Error: edit_file_lines only supports UTF-8 text files")
+
+            original_content = read_result.file_data["content"]
+            lines = original_content.splitlines(keepends=True)
+            total_lines = len(lines)
+            if total_lines == 0:
+                return _tool_error("edit_file_lines", runtime.tool_call_id, "Error: file has no lines to replace")
+            if start_line > total_lines or end_line > total_lines:
+                return _tool_error(
+                    "edit_file_lines",
+                    runtime.tool_call_id,
+                    f"Error: line range {start_line}-{end_line} exceeds file length ({total_lines} lines)",
+                )
+
+            new_lines = new_content.splitlines(keepends=True)
+            if new_lines and not new_lines[-1].endswith("\n"):
+                new_lines[-1] += "\n"
+
+            removed = end_line - start_line + 1
+            added = len(new_lines)
+            lines[start_line - 1 : end_line] = new_lines
+            updated_content = "".join(lines)
+            write_result = resolved_backend.write(validated_path, updated_content)
+            if write_result.error:
+                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: {write_result.error}")
+
+            return ToolMessage(
+                content=f"Updated {validated_path}: replaced lines {start_line}-{end_line} ({removed} removed, {added} added)",
+                name="edit_file_lines",
+                tool_call_id=runtime.tool_call_id,
+                status="success",
+            )
+
+        async def async_edit_file_lines(  # noqa: C901, PLR0911
+            file_path: str,
+            start_line: int,
+            end_line: int,
+            new_content: str,
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> ToolMessage:
+            """Asynchronous wrapper for edit_file_lines tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: {e}")
+
+            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: permission denied for write on {validated_path}")
+
+            if start_line < 1 or end_line < start_line:
+                return _tool_error("edit_file_lines", runtime.tool_call_id, "Error: invalid line range; expected 1 <= start_line <= end_line")
+
+            read_result = await resolved_backend.aread(validated_path, offset=0, limit=1_000_000)
+            if read_result.error:
+                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: {read_result.error}")
+            if read_result.file_data is None:
+                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: no data returned for '{validated_path}'")
+            if read_result.file_data.get("encoding", "utf-8") != "utf-8":
+                return _tool_error("edit_file_lines", runtime.tool_call_id, "Error: edit_file_lines only supports UTF-8 text files")
+
+            original_content = read_result.file_data["content"]
+            lines = original_content.splitlines(keepends=True)
+            total_lines = len(lines)
+            if total_lines == 0:
+                return _tool_error("edit_file_lines", runtime.tool_call_id, "Error: file has no lines to replace")
+            if start_line > total_lines or end_line > total_lines:
+                return _tool_error(
+                    "edit_file_lines",
+                    runtime.tool_call_id,
+                    f"Error: line range {start_line}-{end_line} exceeds file length ({total_lines} lines)",
+                )
+
+            new_lines = new_content.splitlines(keepends=True)
+            if new_lines and not new_lines[-1].endswith("\n"):
+                new_lines[-1] += "\n"
+
+            removed = end_line - start_line + 1
+            added = len(new_lines)
+            lines[start_line - 1 : end_line] = new_lines
+            updated_content = "".join(lines)
+            write_result = await resolved_backend.awrite(validated_path, updated_content)
+            if write_result.error:
+                return _tool_error("edit_file_lines", runtime.tool_call_id, f"Error: {write_result.error}")
+
+            return ToolMessage(
+                content=f"Updated {validated_path}: replaced lines {start_line}-{end_line} ({removed} removed, {added} added)",
+                name="edit_file_lines",
+                tool_call_id=runtime.tool_call_id,
+                status="success",
+            )
+
+        return StructuredTool.from_function(
+            name="edit_file_lines",
+            description=tool_description,
+            func=sync_edit_file_lines,
+            coroutine=async_edit_file_lines,
+            infer_schema=False,
+            args_schema=EditFileLinesSchema,
+        )
+
+    def _create_insert_lines_tool(self) -> BaseTool:  # noqa: C901
+        """Create the insert_lines tool."""
+        tool_description = self._custom_tool_descriptions.get("insert_lines") or INSERT_LINES_TOOL_DESCRIPTION
+
+        def sync_insert_lines(  # noqa: PLR0911
+            file_path: str,
+            line: int,
+            content: str,
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> ToolMessage:
+            """Synchronous wrapper for insert_lines tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return _tool_error("insert_lines", runtime.tool_call_id, f"Error: {e}")
+
+            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+                return _tool_error("insert_lines", runtime.tool_call_id, f"Error: permission denied for write on {validated_path}")
+
+            read_result = resolved_backend.read(validated_path, offset=0, limit=1_000_000)
+            if read_result.error:
+                return _tool_error("insert_lines", runtime.tool_call_id, f"Error: {read_result.error}")
+            if read_result.file_data is None:
+                return _tool_error("insert_lines", runtime.tool_call_id, f"Error: no data returned for '{validated_path}'")
+            if read_result.file_data.get("encoding", "utf-8") != "utf-8":
+                return _tool_error("insert_lines", runtime.tool_call_id, "Error: insert_lines only supports UTF-8 text files")
+
+            original_content = read_result.file_data["content"]
+            lines = original_content.splitlines(keepends=True)
+            total_lines = len(lines)
+            if line < 1 or line > total_lines + 1:
+                return _tool_error("insert_lines", runtime.tool_call_id, f"Error: line must be between 1 and {total_lines + 1}, got {line}")
+
+            new_lines = content.splitlines(keepends=True)
+            if new_lines and not new_lines[-1].endswith("\n"):
+                new_lines[-1] += "\n"
+            lines[line - 1 : line - 1] = new_lines
+            updated_content = "".join(lines)
+            write_result = resolved_backend.write(validated_path, updated_content)
+            if write_result.error:
+                return _tool_error("insert_lines", runtime.tool_call_id, f"Error: {write_result.error}")
+            return ToolMessage(
+                content=f"Inserted {len(new_lines)} line(s) at line {line} in {validated_path}",
+                name="insert_lines",
+                tool_call_id=runtime.tool_call_id,
+                status="success",
+            )
+
+        async def async_insert_lines(  # noqa: PLR0911
+            file_path: str,
+            line: int,
+            content: str,
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> ToolMessage:
+            """Asynchronous wrapper for insert_lines tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return _tool_error("insert_lines", runtime.tool_call_id, f"Error: {e}")
+
+            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+                return _tool_error("insert_lines", runtime.tool_call_id, f"Error: permission denied for write on {validated_path}")
+
+            read_result = await resolved_backend.aread(validated_path, offset=0, limit=1_000_000)
+            if read_result.error:
+                return _tool_error("insert_lines", runtime.tool_call_id, f"Error: {read_result.error}")
+            if read_result.file_data is None:
+                return _tool_error("insert_lines", runtime.tool_call_id, f"Error: no data returned for '{validated_path}'")
+            if read_result.file_data.get("encoding", "utf-8") != "utf-8":
+                return _tool_error("insert_lines", runtime.tool_call_id, "Error: insert_lines only supports UTF-8 text files")
+
+            original_content = read_result.file_data["content"]
+            lines = original_content.splitlines(keepends=True)
+            total_lines = len(lines)
+            if line < 1 or line > total_lines + 1:
+                return _tool_error("insert_lines", runtime.tool_call_id, f"Error: line must be between 1 and {total_lines + 1}, got {line}")
+
+            new_lines = content.splitlines(keepends=True)
+            if new_lines and not new_lines[-1].endswith("\n"):
+                new_lines[-1] += "\n"
+            lines[line - 1 : line - 1] = new_lines
+            updated_content = "".join(lines)
+            write_result = await resolved_backend.awrite(validated_path, updated_content)
+            if write_result.error:
+                return _tool_error("insert_lines", runtime.tool_call_id, f"Error: {write_result.error}")
+            return ToolMessage(
+                content=f"Inserted {len(new_lines)} line(s) at line {line} in {validated_path}",
+                name="insert_lines",
+                tool_call_id=runtime.tool_call_id,
+                status="success",
+            )
+
+        return StructuredTool.from_function(
+            name="insert_lines",
+            description=tool_description,
+            func=sync_insert_lines,
+            coroutine=async_insert_lines,
+            infer_schema=False,
+            args_schema=InsertLinesSchema,
+        )
+
+    def _create_delete_lines_tool(self) -> BaseTool:  # noqa: C901
+        """Create the delete_lines tool."""
+        tool_description = self._custom_tool_descriptions.get("delete_lines") or DELETE_LINES_TOOL_DESCRIPTION
+
+        def sync_delete_lines(  # noqa: PLR0911
+            file_path: str,
+            start_line: int,
+            end_line: int,
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> ToolMessage:
+            """Synchronous wrapper for delete_lines tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return _tool_error("delete_lines", runtime.tool_call_id, f"Error: {e}")
+
+            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+                return _tool_error("delete_lines", runtime.tool_call_id, f"Error: permission denied for write on {validated_path}")
+            if start_line < 1 or end_line < start_line:
+                return _tool_error("delete_lines", runtime.tool_call_id, "Error: invalid line range; expected 1 <= start_line <= end_line")
+
+            read_result = resolved_backend.read(validated_path, offset=0, limit=1_000_000)
+            if read_result.error:
+                return _tool_error("delete_lines", runtime.tool_call_id, f"Error: {read_result.error}")
+            if read_result.file_data is None:
+                return _tool_error("delete_lines", runtime.tool_call_id, f"Error: no data returned for '{validated_path}'")
+            if read_result.file_data.get("encoding", "utf-8") != "utf-8":
+                return _tool_error("delete_lines", runtime.tool_call_id, "Error: delete_lines only supports UTF-8 text files")
+
+            original_content = read_result.file_data["content"]
+            lines = original_content.splitlines(keepends=True)
+            total_lines = len(lines)
+            if total_lines == 0:
+                return _tool_error("delete_lines", runtime.tool_call_id, "Error: file has no lines to delete")
+            if start_line > total_lines or end_line > total_lines:
+                return _tool_error(
+                    "delete_lines",
+                    runtime.tool_call_id,
+                    f"Error: line range {start_line}-{end_line} exceeds file length ({total_lines} lines)",
+                )
+
+            removed = end_line - start_line + 1
+            del lines[start_line - 1 : end_line]
+            updated_content = "".join(lines)
+            write_result = resolved_backend.write(validated_path, updated_content)
+            if write_result.error:
+                return _tool_error("delete_lines", runtime.tool_call_id, f"Error: {write_result.error}")
+            return ToolMessage(
+                content=f"Deleted lines {start_line}-{end_line} ({removed} line(s)) from {validated_path}",
+                name="delete_lines",
+                tool_call_id=runtime.tool_call_id,
+                status="success",
+            )
+
+        async def async_delete_lines(  # noqa: PLR0911
+            file_path: str,
+            start_line: int,
+            end_line: int,
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> ToolMessage:
+            """Asynchronous wrapper for delete_lines tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return _tool_error("delete_lines", runtime.tool_call_id, f"Error: {e}")
+
+            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+                return _tool_error("delete_lines", runtime.tool_call_id, f"Error: permission denied for write on {validated_path}")
+            if start_line < 1 or end_line < start_line:
+                return _tool_error("delete_lines", runtime.tool_call_id, "Error: invalid line range; expected 1 <= start_line <= end_line")
+
+            read_result = await resolved_backend.aread(validated_path, offset=0, limit=1_000_000)
+            if read_result.error:
+                return _tool_error("delete_lines", runtime.tool_call_id, f"Error: {read_result.error}")
+            if read_result.file_data is None:
+                return _tool_error("delete_lines", runtime.tool_call_id, f"Error: no data returned for '{validated_path}'")
+            if read_result.file_data.get("encoding", "utf-8") != "utf-8":
+                return _tool_error("delete_lines", runtime.tool_call_id, "Error: delete_lines only supports UTF-8 text files")
+
+            original_content = read_result.file_data["content"]
+            lines = original_content.splitlines(keepends=True)
+            total_lines = len(lines)
+            if total_lines == 0:
+                return _tool_error("delete_lines", runtime.tool_call_id, "Error: file has no lines to delete")
+            if start_line > total_lines or end_line > total_lines:
+                return _tool_error(
+                    "delete_lines",
+                    runtime.tool_call_id,
+                    f"Error: line range {start_line}-{end_line} exceeds file length ({total_lines} lines)",
+                )
+
+            removed = end_line - start_line + 1
+            del lines[start_line - 1 : end_line]
+            updated_content = "".join(lines)
+            write_result = await resolved_backend.awrite(validated_path, updated_content)
+            if write_result.error:
+                return _tool_error("delete_lines", runtime.tool_call_id, f"Error: {write_result.error}")
+            return ToolMessage(
+                content=f"Deleted lines {start_line}-{end_line} ({removed} line(s)) from {validated_path}",
+                name="delete_lines",
+                tool_call_id=runtime.tool_call_id,
+                status="success",
+            )
+
+        return StructuredTool.from_function(
+            name="delete_lines",
+            description=tool_description,
+            func=sync_delete_lines,
+            coroutine=async_delete_lines,
+            infer_schema=False,
+            args_schema=DeleteLinesSchema,
+        )
+
+    def _create_delete_tool(self) -> BaseTool:  # noqa: C901, PLR0915  # Tool wiring + permission/support handling
         """Create the delete tool."""
         tool_description = self._custom_tool_descriptions.get("delete") or DELETE_TOOL_DESCRIPTION
 
-        def sync_delete(
+        def sync_delete(  # noqa: C901, PLR0911
             file_path: str,
             runtime: ToolRuntime[None, FilesystemState],
+            *,
+            backup: bool = False,
+            backup_dir: str | None = None,
         ) -> ToolMessage:
             """Synchronous wrapper for delete tool."""
             resolved_backend = self._get_backend(runtime)
@@ -1880,6 +2512,73 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
+            backup_path: str | None = None
+            if backup:
+                info, info_error = self._find_path_info(resolved_backend, validated_path)
+                if info_error:
+                    return ToolMessage(
+                        content=f"Error: cannot create backup for {validated_path}: {info_error}",
+                        name="delete",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
+                if info is None:
+                    return ToolMessage(
+                        content=f"Error: cannot create backup for missing path {validated_path}",
+                        name="delete",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
+                if info.get("is_dir", False):
+                    return ToolMessage(
+                        content="Error: backup before delete is only supported for files, not directories",
+                        name="delete",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
+                read_result = resolved_backend.read(validated_path, offset=0, limit=1_000_000)
+                if read_result.error or read_result.file_data is None:
+                    err = read_result.error or f"no data returned for '{validated_path}'"
+                    return ToolMessage(
+                        content=f"Error: cannot create backup for {validated_path}: {err}",
+                        name="delete",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
+                if read_result.file_data.get("encoding", "utf-8") != "utf-8":
+                    return ToolMessage(
+                        content="Error: backup before delete currently supports UTF-8 text files only",
+                        name="delete",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
+                try:
+                    backup_root = validate_path(backup_dir) if backup_dir is not None else str(PurePosixPath(validated_path).parent / ".backups")
+                except ValueError as e:
+                    return ToolMessage(
+                        content=f"Error: invalid backup_dir: {e}",
+                        name="delete",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
+                if _check_fs_permission(self._permissions, "write", backup_root) == "deny":
+                    return ToolMessage(
+                        content=f"Error: permission denied for write on backup directory {backup_root}",
+                        name="delete",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
+                stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+                source_name = PurePosixPath(validated_path).name
+                backup_path = str(PurePosixPath(backup_root) / f"{source_name}.{stamp}.bak")
+                backup_write = resolved_backend.write(backup_path, read_result.file_data["content"])
+                if backup_write.error:
+                    return ToolMessage(
+                        content=f"Error: cannot create backup at {backup_path}: {backup_write.error}",
+                        name="delete",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
             res: DeleteResult = resolved_backend.delete(validated_path)
             if res.error:
                 return ToolMessage(
@@ -1889,15 +2588,18 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             return ToolMessage(
-                content=f"Deleted {res.path}",
+                content=f"Deleted {res.path}" if backup_path is None else f"Deleted {res.path} (backup: {backup_path})",
                 name="delete",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
             )
 
-        async def async_delete(
+        async def async_delete(  # noqa: C901, PLR0911
             file_path: str,
             runtime: ToolRuntime[None, FilesystemState],
+            *,
+            backup: bool = False,
+            backup_dir: str | None = None,
         ) -> ToolMessage:
             """Asynchronous wrapper for delete tool."""
             resolved_backend = self._get_backend(runtime)
@@ -1919,6 +2621,73 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
+            backup_path: str | None = None
+            if backup:
+                info, info_error = await self._afind_path_info(resolved_backend, validated_path)
+                if info_error:
+                    return ToolMessage(
+                        content=f"Error: cannot create backup for {validated_path}: {info_error}",
+                        name="delete",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
+                if info is None:
+                    return ToolMessage(
+                        content=f"Error: cannot create backup for missing path {validated_path}",
+                        name="delete",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
+                if info.get("is_dir", False):
+                    return ToolMessage(
+                        content="Error: backup before delete is only supported for files, not directories",
+                        name="delete",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
+                read_result = await resolved_backend.aread(validated_path, offset=0, limit=1_000_000)
+                if read_result.error or read_result.file_data is None:
+                    err = read_result.error or f"no data returned for '{validated_path}'"
+                    return ToolMessage(
+                        content=f"Error: cannot create backup for {validated_path}: {err}",
+                        name="delete",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
+                if read_result.file_data.get("encoding", "utf-8") != "utf-8":
+                    return ToolMessage(
+                        content="Error: backup before delete currently supports UTF-8 text files only",
+                        name="delete",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
+                try:
+                    backup_root = validate_path(backup_dir) if backup_dir is not None else str(PurePosixPath(validated_path).parent / ".backups")
+                except ValueError as e:
+                    return ToolMessage(
+                        content=f"Error: invalid backup_dir: {e}",
+                        name="delete",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
+                if _check_fs_permission(self._permissions, "write", backup_root) == "deny":
+                    return ToolMessage(
+                        content=f"Error: permission denied for write on backup directory {backup_root}",
+                        name="delete",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
+                stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+                source_name = PurePosixPath(validated_path).name
+                backup_path = str(PurePosixPath(backup_root) / f"{source_name}.{stamp}.bak")
+                backup_write = await resolved_backend.awrite(backup_path, read_result.file_data["content"])
+                if backup_write.error:
+                    return ToolMessage(
+                        content=f"Error: cannot create backup at {backup_path}: {backup_write.error}",
+                        name="delete",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
             res: DeleteResult = await resolved_backend.adelete(validated_path)
             if res.error:
                 return ToolMessage(
@@ -1928,7 +2697,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             return ToolMessage(
-                content=f"Deleted {res.path}",
+                content=f"Deleted {res.path}" if backup_path is None else f"Deleted {res.path} (backup: {backup_path})",
                 name="delete",
                 tool_call_id=runtime.tool_call_id,
                 status="success",

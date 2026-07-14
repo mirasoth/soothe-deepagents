@@ -452,7 +452,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     By default, this agent has access to the following tools:
 
     - `write_todos`: manage a todo list
-    - `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`: file operations
+    - `ls`, `read_file`, `file_info`, `write_file`, `edit_file`, `edit_file_lines`,
+      `insert_lines`, `delete_lines`, `delete`, `glob`, `grep`: file operations
     - `execute`: run shell commands
     - `task`: call subagents
 

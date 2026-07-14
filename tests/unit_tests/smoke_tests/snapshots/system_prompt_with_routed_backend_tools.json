@@ -88,6 +88,25 @@
   },
   {
     "function": {
+      "description": "Gets metadata for a file or directory.\n\nUsage:\n- Returns path type (`file`/`directory`) and available metadata like size/modified timestamp.\n- Useful for validating assumptions before editing or deleting a path.",
+      "name": "file_info",
+      "parameters": {
+        "properties": {
+          "path": {
+            "description": "Absolute path to inspect. Must be absolute, not relative.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
       "description": "Writes content to a file. Creates the file if it does not exist; replaces it entirely if it does.\n\nUsage:\n- Use this tool when you intend to create a new file or replace the whole file. You do not need to read the file first.\n- Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.",
       "name": "write_file",
       "parameters": {
@@ -146,10 +165,119 @@
   },
   {
     "function": {
-      "description": "Deletes a file or directory from the filesystem.\n\nUsage:\n- Permanently removes the file or directory at the given absolute path.\n- Deleting a directory removes it and everything inside it, recursively. Prefer\n  deleting a directory in one call over deleting each file individually.\n- This cannot be undone, so only delete paths you are sure are no longer needed.",
+      "description": "Replaces a line range in a text file.\n\nUsage:\n- Line numbers are 1-indexed and inclusive.\n- Best for surgical edits when exact-string replacement is brittle.",
+      "name": "edit_file_lines",
+      "parameters": {
+        "properties": {
+          "end_line": {
+            "description": "Last line to replace (1-indexed, inclusive). Must be >= start_line.",
+            "type": "integer"
+          },
+          "file_path": {
+            "description": "Absolute path to the file to edit. Must be absolute, not relative.",
+            "type": "string"
+          },
+          "new_content": {
+            "description": "Replacement content for the selected line range.",
+            "type": "string"
+          },
+          "start_line": {
+            "description": "First line to replace (1-indexed, inclusive).",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "file_path",
+          "start_line",
+          "end_line",
+          "new_content"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Inserts content at a specific line in a text file.\n\nUsage:\n- `line=1` inserts at the top of the file.\n- `line=total_lines+1` appends at the end.",
+      "name": "insert_lines",
+      "parameters": {
+        "properties": {
+          "content": {
+            "description": "Content to insert at the specified line.",
+            "type": "string"
+          },
+          "file_path": {
+            "description": "Absolute path to the file to edit. Must be absolute, not relative.",
+            "type": "string"
+          },
+          "line": {
+            "default": 1,
+            "description": "Line number where insertion begins (1-indexed). Valid range: 1 to total_lines+1.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "file_path",
+          "content"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Deletes a line range from a text file.\n\nUsage:\n- Line numbers are 1-indexed and inclusive.\n- Useful for removing obsolete blocks without replacing nearby content.",
+      "name": "delete_lines",
+      "parameters": {
+        "properties": {
+          "end_line": {
+            "description": "Last line to delete (1-indexed, inclusive). Must be >= start_line.",
+            "type": "integer"
+          },
+          "file_path": {
+            "description": "Absolute path to the file to edit. Must be absolute, not relative.",
+            "type": "string"
+          },
+          "start_line": {
+            "description": "First line to delete (1-indexed, inclusive).",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "file_path",
+          "start_line",
+          "end_line"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Deletes a file or directory from the filesystem.\n\nUsage:\n- Permanently removes the file or directory at the given absolute path.\n- Deleting a directory removes it and everything inside it, recursively. Prefer\n  deleting a directory in one call over deleting each file individually.\n- Set `backup=true` to create a timestamped backup for UTF-8 text files before deletion.\n- This cannot be undone, so only delete paths you are sure are no longer needed.",
       "name": "delete",
       "parameters": {
         "properties": {
+          "backup": {
+            "default": false,
+            "description": "If True and the path is a text file, create a timestamped backup before deleting.",
+            "type": "boolean"
+          },
+          "backup_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional absolute directory path for backups. Defaults to `<file-parent>/.backups/`."
+          },
           "file_path": {
             "description": "Absolute path to the file to delete. Must be absolute, not relative.",
             "type": "string"
