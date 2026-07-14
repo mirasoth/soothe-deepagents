@@ -81,7 +81,7 @@ The layers compose: any LangGraph `CompiledStateGraph` can be passed in as a sub
 - **[Documentation](https://docs.langchain.com/oss/python/deepagents)** — Full documentation
 - **[LangChain ecosystem overview](https://docs.langchain.com/oss/python/concepts/products)** — how Deep Agents, LangChain, LangGraph, and LangSmith fit together
 - **[API Reference](https://reference.langchain.com/python/deepagents/)** — Full SDK reference documentation
-- **[Examples](https://github.com/mirasoth/soothe-deepagents/tree/main/examples)** — Working agents and patterns
+- **[Examples](./examples)** — Working agents and patterns
 - **[Discussions](https://forum.langchain.com/c/oss-product-help-lc-and-lg/deep-agents/18)** — Community forum for technical questions, ideas, and feedback
 - [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
 - [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards
