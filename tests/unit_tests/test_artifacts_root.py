@@ -5,6 +5,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
 from soothe_deepagents.backends.composite import CompositeBackend
+from soothe_deepagents.backends.filesystem import FilesystemBackend
 from soothe_deepagents.backends.state import StateBackend
 from soothe_deepagents.backends.store import StoreBackend
 from soothe_deepagents.middleware.filesystem import FilesystemMiddleware
@@ -66,6 +67,32 @@ class TestFilesystemMiddlewareArtifactsRoot:
 
     def test_root_slash_no_double_slash(self) -> None:
         mw = FilesystemMiddleware()
+        assert mw._large_tool_results_prefix == "/large_tool_results"
+        assert mw._conversation_history_prefix == "/conversation_history"
+
+    def test_explicit_prefix_overrides(self) -> None:
+        mw = FilesystemMiddleware(
+            large_tool_results_prefix=".soothe/large_tool_results",
+            conversation_history_prefix=".soothe/conversation_history",
+        )
+        assert mw._large_tool_results_prefix == ".soothe/large_tool_results"
+        assert mw._conversation_history_prefix == ".soothe/conversation_history"
+
+    def test_workspace_fallback_mode_for_non_virtual_filesystem_backend(self) -> None:
+        backend = FilesystemBackend(virtual_mode=False)
+        mw = FilesystemMiddleware(
+            backend=backend,
+            artifacts_prefix_mode="workspace_fallback",
+        )
+        assert mw._large_tool_results_prefix == ".deepagents/large_tool_results"
+        assert mw._conversation_history_prefix == ".deepagents/conversation_history"
+
+    def test_workspace_fallback_mode_keeps_backend_default_for_store_backend(self) -> None:
+        backend = _make_store_backend()
+        mw = FilesystemMiddleware(
+            backend=backend,
+            artifacts_prefix_mode="workspace_fallback",
+        )
         assert mw._large_tool_results_prefix == "/large_tool_results"
         assert mw._conversation_history_prefix == "/conversation_history"
 

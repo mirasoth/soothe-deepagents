@@ -98,6 +98,9 @@ _FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
 _SYNC_GLOB_WORKERS = 4
 """Thread-pool size for synchronous glob operations."""
 
+ArtifactsPrefixMode = Literal["backend_default", "workspace_fallback"]
+"""Resolution mode for artifact storage prefixes."""
+
 FilesystemOperation = Literal["read", "write"]
 """Classification of filesystem tools as read-only or mutating."""
 
@@ -121,6 +124,40 @@ _READ_FILE_MEDIA_RESULT: Final = "read_file_media_result"
 
 _VIDEO_SAMPLING_RATE: Final = 0.5
 """Seconds between sampled frames when extracting stills from a video."""
+
+_WORKSPACE_FALLBACK_LARGE_RESULTS_PREFIX: Final = ".deepagents/large_tool_results"
+_WORKSPACE_FALLBACK_CONVERSATION_HISTORY_PREFIX: Final = ".deepagents/conversation_history"
+
+
+def _normalize_artifact_prefix(prefix: str) -> str:
+    """Normalize artifact prefix paths to avoid trailing-slash join bugs."""
+    if prefix == "/":
+        return ""
+    return prefix.rstrip("/")
+
+
+def _target_backend_for_path(backend: BackendProtocol, path: str) -> BackendProtocol:
+    """Resolve the effective backend for `path` when using CompositeBackend."""
+    if isinstance(backend, CompositeBackend):
+        routed_backend, _, _ = _route_for_path(
+            default=backend.default,
+            sorted_routes=backend.sorted_routes,
+            path=path,
+        )
+        return routed_backend
+    return backend
+
+
+def _is_portability_risky_backend_prefix(backend: BackendProtocol, prefix: str) -> bool:
+    """Return True when backend-default prefixes may write outside a workspace.
+
+    Non-virtual filesystem/shell backends interpret absolute paths as host paths.
+    In restricted environments this commonly points at unwritable locations.
+    """
+    if not PurePosixPath(prefix).is_absolute():
+        return False
+    target_backend = _target_backend_for_path(backend, prefix)
+    return isinstance(target_backend, FilesystemBackend | LocalShellBackend) and not bool(getattr(target_backend, "virtual_mode", False))
 
 
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
@@ -1355,6 +1392,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
+        large_tool_results_prefix: str | None = None,
+        conversation_history_prefix: str | None = None,
+        artifacts_prefix_mode: ArtifactsPrefixMode = "backend_default",
         tools: list[FsToolName] | Literal["all"] | None = None,
         _permissions: list[FilesystemPermission] | None = None,
     ) -> None:
@@ -1373,6 +1413,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
+            large_tool_results_prefix: Optional override path prefix for evicted
+                tool-result payloads.
+            conversation_history_prefix: Optional override path prefix for
+                conversation-history offloads.
+            artifacts_prefix_mode: Prefix resolution strategy when override
+                prefixes are not provided.
+                - `"backend_default"` keeps existing backend-derived prefixes.
+                - `"workspace_fallback"` falls back to workspace-local
+                  `.soothe/...` prefixes when backend defaults are likely to
+                  target host-absolute paths on non-virtual filesystem backends.
             tools: Allowlist of tool names to expose to the model.
                 ``"all"` indicates all tools. If unset, defaults to `"all"`.
                 Pass a list containing any of `"ls"`, `"read_file"`,
@@ -1396,6 +1446,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if max_execute_timeout <= 0:
             msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
             raise ValueError(msg)
+        if artifacts_prefix_mode not in ("backend_default", "workspace_fallback"):
+            msg = f"artifacts_prefix_mode must be 'backend_default' or 'workspace_fallback', got {artifacts_prefix_mode!r}"
+            raise ValueError(msg)
         # Use provided backend or default to StateBackend instance
         self.backend = backend if backend is not None else StateBackend()
         if (
@@ -1413,9 +1466,22 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             raise NotImplementedError(msg)
 
         artifacts_root = self.backend.artifacts_root if isinstance(self.backend, CompositeBackend) else "/"
-        _root = artifacts_root.rstrip("/")
-        self._large_tool_results_prefix = f"{_root}/large_tool_results"
-        self._conversation_history_prefix = f"{_root}/conversation_history"
+        root_prefix = _normalize_artifact_prefix(artifacts_root)
+        default_large_tool_results_prefix = f"{root_prefix}/large_tool_results"
+        default_conversation_history_prefix = f"{root_prefix}/conversation_history"
+        if artifacts_prefix_mode == "workspace_fallback" and _is_portability_risky_backend_prefix(
+            self.backend,
+            default_large_tool_results_prefix,
+        ):
+            default_large_tool_results_prefix = _WORKSPACE_FALLBACK_LARGE_RESULTS_PREFIX
+            default_conversation_history_prefix = _WORKSPACE_FALLBACK_CONVERSATION_HISTORY_PREFIX
+
+        self._large_tool_results_prefix = _normalize_artifact_prefix(
+            large_tool_results_prefix if large_tool_results_prefix is not None else default_large_tool_results_prefix
+        )
+        self._conversation_history_prefix = _normalize_artifact_prefix(
+            conversation_history_prefix if conversation_history_prefix is not None else default_conversation_history_prefix
+        )
 
         # Cache for dynamic system prompts keyed on the `include_execution`
         # flag. The text depends only on that flag and immutable config, so it
