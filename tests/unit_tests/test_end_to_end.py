@@ -4053,6 +4053,7 @@ def test_tool_command_parent_handoff_preserved() -> None:
 
 def test_read_file_video_frames_attached_after_tool_message(monkeypatch: pytest.MonkeyPatch) -> None:
     """Video frame media is sent as input after the required tool result."""
+    monkeypatch.setattr(filesystem_middleware, "video_dependencies_available", lambda: True)
     monkeypatch.setattr(
         filesystem_middleware,
         "extract_video_frames",

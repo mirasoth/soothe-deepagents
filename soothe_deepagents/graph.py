@@ -51,6 +51,11 @@ from soothe_deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSub
 from soothe_deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from soothe_deepagents.middleware.memory import MemoryMiddleware
 from soothe_deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
+from soothe_deepagents.middleware.reliability import (
+    InvalidToolHintsMiddleware,
+    NetworkToolErrorsMiddleware,
+    ToolOutputCapMiddleware,
+)
 from soothe_deepagents.middleware.skills import SkillsMiddleware
 from soothe_deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
@@ -59,6 +64,7 @@ from soothe_deepagents.middleware.subagents import (
     SubAgentMiddleware,
 )
 from soothe_deepagents.middleware.summarization import create_summarization_middleware
+from soothe_deepagents.middleware.tool_timeout import ToolTimeoutMiddleware
 from soothe_deepagents.profiles.harness.harness_profiles import (
     GeneralPurposeSubagentProfile,
     _apply_profile_prompt,
@@ -166,6 +172,23 @@ class SystemPromptConfig(TypedDict, total=False):
 
 
 _PROMPT_SEPARATOR = "\n\n"
+
+
+class ReliabilityMiddlewareConfig(TypedDict, total=False):
+    """Optional reliability middleware toggles for `create_deep_agent`.
+
+    All options are opt-in and default to disabled to preserve legacy behavior.
+    """
+
+    network_tool_errors: bool
+    invalid_tool_hints: bool
+    tool_output_cap_chars: int
+    tool_output_cap_code_exec_chars: int
+    tool_timeout_seconds: float
+    tool_timeout_per_tool: dict[str, float]
+    tool_timeout_skip_tools: list[str]
+    tool_timeout_honor_timeout_arg_for: list[str]
+    tool_timeout_max_seconds: float
 
 
 def _assemble_prompt_parts(parts: list[str | SystemMessage]) -> str | SystemMessage:
@@ -289,6 +312,45 @@ def _merge_fs_interrupt_on(
     return merged
 
 
+def _materialize_reliability_middleware(
+    reliability: ReliabilityMiddlewareConfig | None,
+) -> list[AgentMiddleware[Any, Any, Any]]:
+    """Build optional reliability middleware list (all features opt-in)."""
+    if not reliability:
+        return []
+
+    middleware: list[AgentMiddleware[Any, Any, Any]] = []
+
+    tool_timeout_seconds = reliability.get("tool_timeout_seconds")
+    if tool_timeout_seconds is not None:
+        middleware.append(
+            ToolTimeoutMiddleware(
+                default_timeout_seconds=float(tool_timeout_seconds),
+                per_tool_timeout_seconds=reliability.get("tool_timeout_per_tool"),
+                skip_tools=frozenset(reliability.get("tool_timeout_skip_tools", [])),
+                honor_timeout_arg_for=frozenset(reliability.get("tool_timeout_honor_timeout_arg_for", [])),
+                max_timeout_seconds=reliability.get("tool_timeout_max_seconds"),
+            )
+        )
+
+    if reliability.get("network_tool_errors", False):
+        middleware.append(NetworkToolErrorsMiddleware())
+
+    if reliability.get("invalid_tool_hints", False):
+        middleware.append(InvalidToolHintsMiddleware())
+
+    tool_output_cap_chars = reliability.get("tool_output_cap_chars")
+    if tool_output_cap_chars is not None:
+        middleware.append(
+            ToolOutputCapMiddleware(
+                default_max_chars=int(tool_output_cap_chars),
+                code_exec_max_chars=reliability.get("tool_output_cap_code_exec_chars"),
+            )
+        )
+
+    return middleware
+
+
 def _apply_custom_middleware(
     base: list[AgentMiddleware[Any, Any, Any]],
     custom: Sequence[AgentMiddleware[Any, Any, Any]],
@@ -368,6 +430,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     permissions: list[FilesystemPermission] | None = None,
     backend: BackendProtocol | BackendFactory | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
+    reliability_middleware: ReliabilityMiddlewareConfig | None = None,
     response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
     state_schema: type[DeepAgentState] | None = None,
     context_schema: type[ContextT] | None = None,
@@ -593,6 +656,26 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             For example, `interrupt_on={"edit_file": True}` pauses before
             every edit.
+        reliability_middleware: Optional reliability middleware toggles.
+
+            All entries are opt-in and disabled by default to preserve existing behavior.
+            Supported keys:
+
+            - `network_tool_errors`: Convert recoverable network failures into
+              tool messages rather than raising.
+            - `invalid_tool_hints`: Append actionable hints for invalid tool
+              name errors.
+            - `tool_output_cap_chars`: Cap tool output chars before model
+              context. Set to enable.
+            - `tool_output_cap_code_exec_chars`: Optional cap override for
+              code execution tool outputs when `tool_output_cap_chars` is set.
+            - `tool_timeout_seconds`: Wrap tool calls with timeout. Set to
+              enable.
+            - `tool_timeout_per_tool`: Per-tool timeout overrides.
+            - `tool_timeout_skip_tools`: Tools to skip timeout wrapping.
+            - `tool_timeout_honor_timeout_arg_for`: Tools allowed to honor a
+              `timeout` arg in tool call inputs.
+            - `tool_timeout_max_seconds`: Max timeout clamp.
         response_format: A structured output response format to use for the agent.
         state_schema: Custom state schema for the agent graph. Must be a
             `TypedDict` subclass of
@@ -751,6 +834,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
             ]
+            subagent_middleware.extend(_materialize_reliability_middleware(reliability_middleware))
             subagent_skills = spec.get("skills")
             if subagent_skills:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
@@ -837,6 +921,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
         ]
+        gp_middleware.extend(_materialize_reliability_middleware(reliability_middleware))
         if skills is not None:
             gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
 
@@ -925,6 +1010,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             PatchToolCallsMiddleware(),
         ]
     )
+    deepagent_middleware.extend(_materialize_reliability_middleware(reliability_middleware))
 
     if async_subagents:
         # Async here means that we run these subagents in a non-blocking manner.

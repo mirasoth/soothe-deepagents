@@ -49,7 +49,13 @@ Use a **plain tool** when:
 
 from soothe_deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from soothe_deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
+from soothe_deepagents.middleware.llm_call_policy import LLMCallPolicyConfig, run_llm_call_with_policy
 from soothe_deepagents.middleware.memory import MemoryMiddleware
+from soothe_deepagents.middleware.reliability import (
+    InvalidToolHintsMiddleware,
+    NetworkToolErrorsMiddleware,
+    ToolOutputCapMiddleware,
+)
 from soothe_deepagents.middleware.rubric import (
     GRADER_SYSTEM_PROMPT,
     RUBRIC_GRADER_MESSAGE_SOURCE,
@@ -75,6 +81,7 @@ from soothe_deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
 )
+from soothe_deepagents.middleware.tool_timeout import ToolTimeoutMiddleware
 
 __all__ = [
     "DEEPAGENTS_DEFAULT_SUMMARY_PROMPT",
@@ -90,7 +97,10 @@ __all__ = [
     "FilesystemPermission",
     "GraderResponse",
     "GraderVerdict",
+    "InvalidToolHintsMiddleware",
+    "LLMCallPolicyConfig",
     "MemoryMiddleware",
+    "NetworkToolErrorsMiddleware",
     "RubricEvaluation",
     "RubricMiddleware",
     "RubricResult",
@@ -100,5 +110,8 @@ __all__ = [
     "SubAgentMiddleware",
     "SummarizationMiddleware",
     "SummarizationToolMiddleware",
+    "ToolOutputCapMiddleware",
+    "ToolTimeoutMiddleware",
     "create_summarization_tool_middleware",
+    "run_llm_call_with_policy",
 ]
