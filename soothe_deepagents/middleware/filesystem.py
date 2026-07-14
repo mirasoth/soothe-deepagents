@@ -1444,6 +1444,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             thread_name_prefix="soothe_deepagents-glob",
         )
         self._glob_slots = threading.BoundedSemaphore(_SYNC_GLOB_WORKERS)
+        self._active_edit_paths: set[str] = set()
+        self._active_edit_paths_lock = threading.Lock()
 
         self.tools = [
             self._create_ls_tool(),
@@ -2035,7 +2037,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=WriteFileSchema,
         )
 
-    def _create_edit_file_tool(self) -> BaseTool:
+    def _create_edit_file_tool(self) -> BaseTool:  # noqa: C901
         """Create the edit_file tool."""
         tool_description = self._custom_tool_descriptions.get("edit_file") or EDIT_FILE_TOOL_DESCRIPTION
 
@@ -2066,7 +2068,23 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            res: EditResult = resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all)
+            acquired = False
+            with self._active_edit_paths_lock:
+                if validated_path not in self._active_edit_paths:
+                    self._active_edit_paths.add(validated_path)
+                    acquired = True
+            if not acquired:
+                return ToolMessage(
+                    content=f"Error: parallel edit_file calls for {validated_path} are not allowed",
+                    name="edit_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            try:
+                res: EditResult = resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all)
+            finally:
+                with self._active_edit_paths_lock:
+                    self._active_edit_paths.discard(validated_path)
             if res.error:
                 return ToolMessage(
                     content=res.error,
@@ -2108,7 +2126,23 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            res: EditResult = await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all)
+            acquired = False
+            with self._active_edit_paths_lock:
+                if validated_path not in self._active_edit_paths:
+                    self._active_edit_paths.add(validated_path)
+                    acquired = True
+            if not acquired:
+                return ToolMessage(
+                    content=f"Error: parallel edit_file calls for {validated_path} are not allowed",
+                    name="edit_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            try:
+                res: EditResult = await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all)
+            finally:
+                with self._active_edit_paths_lock:
+                    self._active_edit_paths.discard(validated_path)
             if res.error:
                 return ToolMessage(
                     content=res.error,
@@ -3079,6 +3113,30 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             unsupported.add("delete")
         return unsupported, execution_active, backend
 
+    @staticmethod
+    def _has_parallel_same_file_edit(request: ToolCallRequest) -> bool:
+        """Return whether this tool call is one of duplicate same-file edit calls."""
+        if request.tool_call.get("name") != "edit_file":
+            return False
+        args = request.tool_call.get("args")
+        if not isinstance(args, dict):
+            return False
+        file_path = args.get("file_path")
+        if not isinstance(file_path, str):
+            return False
+        messages = request.state.get("messages", [])
+        last_ai = next((msg for msg in reversed(messages) if isinstance(msg, AIMessage)), None)
+        if last_ai is None:
+            return False
+        same_file_edits = [
+            call
+            for call in last_ai.tool_calls
+            if call.get("name") == "edit_file"
+            and isinstance(call.get("args"), dict)
+            and cast("dict[str, Any]", call["args"]).get("file_path") == file_path
+        ]
+        return len(same_file_edits) > 1
+
     def _resolve_capture(self, resolved_backend: BackendProtocol, tool_call_id: str | None) -> tuple[BaseSandbox, str] | None:
         """Resolve the executing sandbox and offload path for capture-at-source.
 
@@ -3838,6 +3896,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Tool-execution exceptions (including `ToolException`) propagate
             through this wrapper unhandled by design.
         """
+        if self._has_parallel_same_file_edit(request):
+            return _tool_error(
+                name="edit_file",
+                tool_call_id=request.tool_call.get("id"),
+                content=f"Error: parallel edit_file calls for {request.tool_call['args']['file_path']} are not allowed",
+            )
+
         tool_result = handler(request)
 
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
@@ -3863,6 +3928,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Tool-execution exceptions (including `ToolException`) propagate
                 through this wrapper unhandled by design.
         """
+        if self._has_parallel_same_file_edit(request):
+            return _tool_error(
+                name="edit_file",
+                tool_call_id=request.tool_call.get("id"),
+                content=f"Error: parallel edit_file calls for {request.tool_call['args']['file_path']} are not allowed",
+            )
+
         tool_result = await handler(request)
 
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:

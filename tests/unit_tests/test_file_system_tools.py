@@ -364,13 +364,8 @@ def test_grep_finds_written_file() -> None:
     assert "/project/main.py" in grep_message.content, "Grep should reference the file containing 'import'"
 
 
-# Our reducers do not handle parallel edits in StateBackend.
-# These will also not work correctly for other backends due to race conditions.
-# Even sandbox/file system backend could get into some edge cases (e.g., if the edits are overlapping)
-# Generally best to instruct the LLM to avoid parallel edits of the same file likely.
-@pytest.mark.xfail(reason="We should add after_model middleware to fail parallel edits of the same file.")
 def test_parallel_edit_file_calls() -> None:
-    """Verify that parallel edit_file calls correctly update file state."""
+    """Verify parallel edit_file calls on the same path fail fast."""
     # Fake model will write a file, then issue multiple edit_file calls in parallel
     fake_model = GenericFakeChatModel(
         messages=iter(
@@ -424,11 +419,15 @@ def test_parallel_edit_file_calls() -> None:
         checkpointer=InMemorySaver(),
     )
 
-    _ = agent.invoke(
+    result = agent.invoke(
         {"messages": [HumanMessage(content="Edit file in parallel")]},
         config={"configurable": {"thread_id": "test_thread_parallel_edits"}},
     )
-    assert False, "Finish implementing correct behavior to add a ToolMessage with error if parallel edits to the same file are attempted."  # noqa: PT015, B011
+    tool_messages = [msg for msg in result["messages"] if isinstance(msg, ToolMessage) and msg.name == "edit_file"]
+    assert len(tool_messages) == 2
+    error_messages = [msg for msg in tool_messages if msg.status == "error"]
+    assert len(error_messages) >= 1
+    assert all("parallel edit_file calls for /multi.txt are not allowed" in msg.content for msg in error_messages)
 
 
 def test_path_traversal_returns_error_message() -> None:

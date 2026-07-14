@@ -713,14 +713,12 @@ def _build_task_tool(  # noqa: C901, PLR0915
             description,
             runtime,
         )
-        # The parent's callbacks, tags and configurable reach the subagent
-        # automatically: langgraph's `ensure_config` seeds each run from the
-        # ambient parent config and (as of langgraph#7926) merges it per-key, so
-        # the subagent's bound config still wins collisions (e.g. `lc_agent_name`,
-        # `recursion_limit`) and parent metadata propagates (soothe_deepagents#3634).
-        # Forwarding those keys explicitly would double-count under the merge
-        # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
+        # Keep subagent identity config stable while forwarding callbacks from the
+        # parent invoke config so callback handlers observe subagent model calls.
         subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
+        callbacks = runtime.config.get("callbacks") if isinstance(runtime.config, dict) else None
+        if callbacks is not None:
+            subagent_config["callbacks"] = callbacks
         with _subagent_tracing_context():
             result = subagent.invoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
@@ -741,14 +739,12 @@ def _build_task_tool(  # noqa: C901, PLR0915
             description,
             runtime,
         )
-        # The parent's callbacks, tags and configurable reach the subagent
-        # automatically: langgraph's `ensure_config` seeds each run from the
-        # ambient parent config and (as of langgraph#7926) merges it per-key, so
-        # the subagent's bound config still wins collisions (e.g. `lc_agent_name`,
-        # `recursion_limit`) and parent metadata propagates (soothe_deepagents#3634).
-        # Forwarding those keys explicitly would double-count under the merge
-        # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
+        # Keep subagent identity config stable while forwarding callbacks from the
+        # parent invoke config so callback handlers observe subagent model calls.
         subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
+        callbacks = runtime.config.get("callbacks") if isinstance(runtime.config, dict) else None
+        if callbacks is not None:
+            subagent_config["callbacks"] = callbacks
         with _subagent_tracing_context():
             result = await subagent.ainvoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
