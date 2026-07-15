@@ -241,6 +241,8 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         self.sources = sources
         self._add_cache_control = add_cache_control
         self.system_prompt = system_prompt
+        self._formatted_memory_cache_key: tuple[str, tuple[tuple[str, str | None], ...]] | None = None
+        self._formatted_memory_cache_value: str | None = None
 
     def _get_backend(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
         """Resolve backend from instance or factory.
@@ -299,6 +301,22 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
 
         memory_body = "\n\n".join(sections)
         return template.format(agent_memory=memory_body)
+
+    def _format_agent_memory_cached(self, contents: dict[str, str], template: str) -> str:
+        """Format memory content with a per-instance snapshot cache.
+
+        The formatted fragment only depends on the template and the current
+        source-aligned memory snapshot, so steady-state turns can reuse the
+        same string without rebuilding it.
+        """
+        snapshot: tuple[tuple[str, str | None], ...] = tuple((path, contents.get(path)) for path in self.sources)
+        cache_key = (template, snapshot)
+        if cache_key == self._formatted_memory_cache_key and self._formatted_memory_cache_value is not None:
+            return self._formatted_memory_cache_value
+        formatted = self._format_agent_memory(contents, template)
+        self._formatted_memory_cache_key = cache_key
+        self._formatted_memory_cache_value = formatted
+        return formatted
 
     def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load memory content before agent execution (synchronous).
@@ -381,7 +399,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
             new_system_message = request.system_message
         else:
             contents = request.state.get("memory_contents", {})
-            agent_memory = self._format_agent_memory(contents, self.system_prompt)
+            agent_memory = self._format_agent_memory_cached(contents, self.system_prompt)
             new_system_message = append_to_system_message(request.system_message, agent_memory)
 
         # Runtime check uses `request.model` (not a flag captured at init) so

@@ -1095,6 +1095,34 @@ def test_modify_request_uses_custom_template() -> None:
     assert "<agent_memory>" not in appended  # default template marker absent
 
 
+def test_modify_request_reuses_cached_formatted_memory() -> None:
+    """Repeated modify_request calls with unchanged memory reuse formatted text."""
+    middleware = MemoryMiddleware(
+        backend=StateBackend(),
+        sources=["/memory/AGENTS.md"],
+    )
+    request = ModelRequest(
+        model=_fake_anthropic(),
+        messages=[HumanMessage(content="hi")],
+        system_message=SystemMessage(content="base"),
+        state={"messages": [], "memory_contents": {"/memory/AGENTS.md": "remember this"}},  # type: ignore[typeddict-unknown-key]
+    )
+
+    original = middleware._format_agent_memory
+    call_count = 0
+
+    def _spy(contents: dict[str, str], template: str = MEMORY_SYSTEM_PROMPT) -> str:
+        nonlocal call_count
+        call_count += 1
+        return original(contents, template)
+
+    middleware._format_agent_memory = _spy  # type: ignore[method-assign]
+    middleware.modify_request(request)
+    middleware.modify_request(request)
+
+    assert call_count == 1
+
+
 def test_modify_request_cache_control_runs_with_system_prompt_none() -> None:
     """`add_cache_control` still attaches the breakpoint when `system_prompt=None`."""
     middleware = MemoryMiddleware(

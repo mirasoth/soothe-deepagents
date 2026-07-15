@@ -7,7 +7,6 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
-import soothe_deepagents.middleware.filesystem as filesystem_middleware
 from soothe_deepagents.backends import StateBackend, StoreBackend
 from soothe_deepagents.backends.protocol import DeleteResult, ExecuteResponse, GrepResult, LsResult, SandboxBackendProtocol
 from soothe_deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, TRUNCATION_GUIDANCE
@@ -404,7 +403,7 @@ class TestFilesystemMiddlewareAsync:
 
     async def test_glob_timeout_returns_error_message_async(self):
         backend, _ = _make_backend()
-        middleware = FilesystemMiddleware(backend=backend)
+        middleware = FilesystemMiddleware(backend=backend, glob_timeout_seconds=0.5)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
         backend_obj = middleware._get_backend(_runtime())
 
@@ -413,7 +412,6 @@ class TestFilesystemMiddlewareAsync:
             return []
 
         with (
-            patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
             patch.object(middleware, "_get_backend", return_value=backend_obj),
             patch.object(backend_obj, "aglob", side_effect=slow_aglob),
         ):

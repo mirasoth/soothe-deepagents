@@ -2165,3 +2165,42 @@ def test_modify_request_uses_custom_template() -> None:
     assert "WARN:" in appended
     assert "LIST:" in appended
     assert "## Skills System" not in appended  # default template marker absent
+
+
+def test_modify_request_reuses_cached_skills_section() -> None:
+    """Repeated modify_request calls with unchanged skills reuse rendered section."""
+    middleware = SkillsMiddleware(
+        backend=StateBackend(),
+        sources=["/skills/user/"],
+    )
+    skills_metadata: list[SkillMetadata] = [
+        {
+            "name": "cached-skill",
+            "description": "Reusable test skill",
+            "path": "/skills/user/cached-skill/SKILL.md",
+            "license": None,
+            "compatibility": None,
+            "metadata": {},
+            "allowed_tools": [],
+        }
+    ]
+    request = ModelRequest(
+        model=GenericFakeChatModel(messages=iter([])),  # ty: ignore[unresolved-reference]
+        messages=[HumanMessage(content="hi")],
+        system_message=SystemMessage(content="base"),
+        state={"messages": [], "skills_metadata": skills_metadata},  # type: ignore[typeddict-unknown-key]
+    )
+
+    original = middleware._format_skills_list
+    call_count = 0
+
+    def _spy(skills: list[SkillMetadata]) -> str:
+        nonlocal call_count
+        call_count += 1
+        return original(skills)
+
+    middleware._format_skills_list = _spy  # type: ignore[method-assign]
+    middleware.modify_request(request)
+    middleware.modify_request(request)
+
+    assert call_count == 1

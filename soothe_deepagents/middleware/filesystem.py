@@ -659,13 +659,13 @@ SEARCH_TRUNCATION_NOTE = (
 )
 
 
-def _glob_timeout_message() -> str:
+def _glob_timeout_message(timeout_seconds: float) -> str:
     """Build the glob-timeout error string.
 
-    Reads `GLOB_TIMEOUT` at call time so tests and overrides keep the message
-    in sync with the active deadline.
+    Args:
+        timeout_seconds: Active timeout deadline in seconds.
     """
-    return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
+    return f"Error: glob timed out after {timeout_seconds}s. Try a more specific pattern or a narrower path."
 
 
 def _discard_task_result(task: asyncio.Future[Any]) -> None:
@@ -1477,7 +1477,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
     state_schema = FilesystemState
 
-    def __init__(
+    def __init__(  # noqa: PLR0915
         self,
         *,
         backend: BACKEND_TYPES | None = None,
@@ -1486,6 +1486,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
+        glob_sync_workers: int | None = None,
+        glob_timeout_seconds: float | None = None,
+        allow_parallel_edit_same_path: bool = False,
         large_tool_results_prefix: str | None = None,
         conversation_history_prefix: str | None = None,
         artifacts_prefix_mode: ArtifactsPrefixMode = "backend_default",
@@ -1507,6 +1510,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
+            glob_sync_workers: Worker count for synchronous glob calls.
+
+                Defaults to 4. Higher values can improve throughput when many
+                independent glob calls are expected.
+            glob_timeout_seconds: Timeout in seconds for each glob call.
+
+                Defaults to 10.0 seconds.
+            allow_parallel_edit_same_path: Whether concurrent `edit_file` calls
+                targeting the same path are allowed.
+
+                Defaults to `False` to preserve existing safety behavior.
             large_tool_results_prefix: Optional override path prefix for evicted
                 tool-result payloads.
             conversation_history_prefix: Optional override path prefix for
@@ -1539,6 +1553,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             raise ValueError(msg)
         if max_execute_timeout <= 0:
             msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
+            raise ValueError(msg)
+        resolved_glob_sync_workers = _SYNC_GLOB_WORKERS if glob_sync_workers is None else glob_sync_workers
+        resolved_glob_timeout_seconds = GLOB_TIMEOUT if glob_timeout_seconds is None else glob_timeout_seconds
+        if resolved_glob_sync_workers <= 0:
+            msg = f"glob_sync_workers must be positive, got {glob_sync_workers}"
+            raise ValueError(msg)
+        if resolved_glob_timeout_seconds <= 0:
+            msg = f"glob_timeout_seconds must be positive, got {glob_timeout_seconds}"
             raise ValueError(msg)
         if artifacts_prefix_mode not in ("backend_default", "workspace_fallback"):
             msg = f"artifacts_prefix_mode must be 'backend_default' or 'workspace_fallback', got {artifacts_prefix_mode!r}"
@@ -1592,6 +1614,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
         self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
+        self._glob_sync_workers = int(resolved_glob_sync_workers)
+        self._glob_timeout_seconds = float(resolved_glob_timeout_seconds)
+        self._allow_parallel_edit_same_path = allow_parallel_edit_same_path
         if isinstance(tools, list):
             self._enabled_tools: frozenset[str] | None = frozenset(tools)
         elif tools == "all":
@@ -1604,10 +1629,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # Timed-out worker threads keep running until the backend call returns,
         # so the semaphore rejects overload instead of queueing behind them.
         self._glob_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=_SYNC_GLOB_WORKERS,
+            max_workers=self._glob_sync_workers,
             thread_name_prefix="soothe_deepagents-glob",
         )
-        self._glob_slots = threading.BoundedSemaphore(_SYNC_GLOB_WORKERS)
+        self._glob_slots = threading.BoundedSemaphore(self._glob_sync_workers)
         self._active_edit_paths: set[str] = set()
         self._active_edit_paths_lock = threading.Lock()
 
@@ -2234,22 +2259,24 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             acquired = False
-            with self._active_edit_paths_lock:
-                if validated_path not in self._active_edit_paths:
-                    self._active_edit_paths.add(validated_path)
-                    acquired = True
-            if not acquired:
-                return ToolMessage(
-                    content=f"Error: parallel edit_file calls for {validated_path} are not allowed",
-                    name="edit_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                )
+            if not self._allow_parallel_edit_same_path:
+                with self._active_edit_paths_lock:
+                    if validated_path not in self._active_edit_paths:
+                        self._active_edit_paths.add(validated_path)
+                        acquired = True
+                if not acquired:
+                    return ToolMessage(
+                        content=f"Error: parallel edit_file calls for {validated_path} are not allowed",
+                        name="edit_file",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
             try:
                 res: EditResult = resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all)
             finally:
-                with self._active_edit_paths_lock:
-                    self._active_edit_paths.discard(validated_path)
+                if acquired:
+                    with self._active_edit_paths_lock:
+                        self._active_edit_paths.discard(validated_path)
             if res.error:
                 return ToolMessage(
                     content=res.error,
@@ -2292,22 +2319,24 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             acquired = False
-            with self._active_edit_paths_lock:
-                if validated_path not in self._active_edit_paths:
-                    self._active_edit_paths.add(validated_path)
-                    acquired = True
-            if not acquired:
-                return ToolMessage(
-                    content=f"Error: parallel edit_file calls for {validated_path} are not allowed",
-                    name="edit_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                )
+            if not self._allow_parallel_edit_same_path:
+                with self._active_edit_paths_lock:
+                    if validated_path not in self._active_edit_paths:
+                        self._active_edit_paths.add(validated_path)
+                        acquired = True
+                if not acquired:
+                    return ToolMessage(
+                        content=f"Error: parallel edit_file calls for {validated_path} are not allowed",
+                        name="edit_file",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
             try:
                 res: EditResult = await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all)
             finally:
-                with self._active_edit_paths_lock:
-                    self._active_edit_paths.discard(validated_path)
+                if acquired:
+                    with self._active_edit_paths_lock:
+                        self._active_edit_paths.discard(validated_path)
             if res.error:
                 return ToolMessage(
                     content=res.error,
@@ -3097,7 +3126,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # misreport it as a glob-pattern timeout. `wait()` reports only
             # whether the deadline elapsed, leaving real backend exceptions to
             # surface through `future.result()` below.
-            done, _ = concurrent.futures.wait([future], timeout=GLOB_TIMEOUT)
+            done, _ = concurrent.futures.wait([future], timeout=self._glob_timeout_seconds)
             if not done:
                 # Deadline elapsed while the worker is still running; it cannot
                 # be cancelled, so abandon it (run_glob's finally releases the
@@ -3106,7 +3135,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 if future.cancel():
                     self._glob_slots.release()
                 return ToolMessage(
-                    content=_glob_timeout_message(),
+                    content=_glob_timeout_message(self._glob_timeout_seconds),
                     name="glob",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
@@ -3167,12 +3196,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # deadline) is not misreported as a glob-pattern timeout, mirroring
             # the sync path. Other backend exceptions surface via `task.result()`.
             task = asyncio.ensure_future(resolved_backend.aglob(pattern, path=backend_path))
-            done, _ = await asyncio.wait({task}, timeout=GLOB_TIMEOUT)
+            done, _ = await asyncio.wait({task}, timeout=self._glob_timeout_seconds)
             if not done:
                 task.add_done_callback(_discard_task_result)
                 task.cancel()
                 return ToolMessage(
-                    content=_glob_timeout_message(),
+                    content=_glob_timeout_message(self._glob_timeout_seconds),
                     name="glob",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
@@ -3713,23 +3742,30 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         else:
             # Build dynamic system prompt reflecting only the tools that survived filtering
             visible_fs = {n for n in (tool_names - unsupported) if n is not None}
-            tool_header, tool_descriptions = _build_fs_tools_section(visible_fs)
-            prompt_parts = [
-                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
-                    large_tool_results_prefix=self._large_tool_results_prefix,
-                    tool_header=tool_header,
-                    tool_descriptions=tool_descriptions,
-                )
-            ]
+            cached_visible = set(self._enabled_tools) if self._enabled_tools is not None else set(_FS_TOOL_ORDER)
+            if visible_fs == cached_visible:
+                # Common path: visible FS tool set matches middleware defaults for this
+                # instance, so reuse the memoized prompt body.
+                system_prompt = self._build_dynamic_system_prompt(include_execution=execution_active)
+            else:
+                tool_header, tool_descriptions = _build_fs_tools_section(visible_fs)
+                prompt_parts = [
+                    _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
+                        large_tool_results_prefix=self._large_tool_results_prefix,
+                        tool_header=tool_header,
+                        tool_descriptions=tool_descriptions,
+                    )
+                ]
+                if execution_active:
+                    prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+                system_prompt = "\n\n".join(prompt_parts).strip()
 
-            # Add execution instructions only if the execute tool survived filtering
+            # Route mappings can vary by runtime backend; append after choosing the
+            # cached/non-cached base prompt so backend-specific guidance remains fresh.
             if execution_active:
-                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
                 route_prompt = _route_host_path_prompt(cast("BackendProtocol", backend))
                 if route_prompt:
-                    prompt_parts.append(route_prompt)
-
-            system_prompt = "\n\n".join(prompt_parts).strip()
+                    system_prompt = f"{system_prompt}\n\n{route_prompt}".strip()
 
         if system_prompt:
             new_system_message = append_to_system_message(request.system_message, system_prompt)
@@ -4188,7 +4224,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Tool-execution exceptions (including `ToolException`) propagate
             through this wrapper unhandled by design.
         """
-        if self._has_parallel_same_file_edit(request):
+        if not self._allow_parallel_edit_same_path and self._has_parallel_same_file_edit(request):
             return _tool_error(
                 name="edit_file",
                 tool_call_id=request.tool_call.get("id"),
@@ -4220,7 +4256,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Tool-execution exceptions (including `ToolException`) propagate
                 through this wrapper unhandled by design.
         """
-        if self._has_parallel_same_file_edit(request):
+        if not self._allow_parallel_edit_same_path and self._has_parallel_same_file_edit(request):
             return _tool_error(
                 name="edit_file",
                 tool_call_id=request.tool_call.get("id"),

@@ -18,7 +18,6 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 
-import soothe_deepagents.middleware.filesystem as filesystem_middleware
 from soothe_deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from soothe_deepagents.backends.protocol import (
     BackendProtocol,
@@ -527,7 +526,7 @@ class TestFilesystemMiddleware:
 
     def test_glob_timeout_returns_error_message(self):
         backend, _ = _make_backend()
-        middleware = FilesystemMiddleware(backend=backend)
+        middleware = FilesystemMiddleware(backend=backend, glob_timeout_seconds=0.5)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
         backend_obj = middleware._get_backend(_runtime())
 
@@ -536,7 +535,6 @@ class TestFilesystemMiddleware:
             return []
 
         with (
-            patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
             patch.object(middleware, "_get_backend", return_value=backend_obj),
             patch.object(backend_obj, "glob", side_effect=slow_glob),
         ):
@@ -557,7 +555,7 @@ class TestFilesystemMiddleware:
     def test_glob_timeout_does_not_stall_subsequent_calls(self):
         """A timed-out glob still running in a worker must not block the next glob."""
         backend, _ = _make_backend()
-        middleware = FilesystemMiddleware(backend=backend)
+        middleware = FilesystemMiddleware(backend=backend, glob_timeout_seconds=0.5)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
         backend_obj = middleware._get_backend(_runtime())
 
@@ -571,7 +569,6 @@ class TestFilesystemMiddleware:
             return backend_obj.__class__.glob(backend_obj, *args, **kwargs)
 
         with (
-            patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
             patch.object(middleware, "_get_backend", return_value=backend_obj),
             patch.object(backend_obj, "glob", side_effect=stuck_then_fast_glob),
         ):
@@ -2497,6 +2494,25 @@ class TestFilesystemMiddleware:
         assert "read_file" in system_text
         assert "write_file" not in system_text
 
+    def test_default_visible_tools_path_reuses_cached_prompt(self):
+        """Default visibility should use the middleware's prompt cache path."""
+        middleware = FilesystemMiddleware(backend=StateBackend())
+        sentinel_prompt = "CACHED-FILESYSTEM-PROMPT"
+        middleware._dynamic_system_prompt_cache[False] = sentinel_prompt
+
+        request = MagicMock()
+        request.tools = middleware.tools
+        request.system_message = None
+        request.runtime = _runtime()
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        system_message_override = next(c for c in request.override.call_args_list if "system_message" in c.kwargs)
+        content = system_message_override.kwargs["system_message"].content
+        system_text = content if isinstance(content, str) else " ".join(b["text"] for b in content if isinstance(b, dict) and "text" in b)
+        assert sentinel_prompt in system_text
+
     def test_delete_invalid_path_returns_error(self):
         """The sync delete tool rejects a traversal path before deleting."""
         middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
@@ -2949,7 +2965,33 @@ class TestPatchToolCallsMiddleware:
         ]
         middleware = PatchToolCallsMiddleware()
         state_update = middleware.before_agent({"messages": input_messages}, None)
-        assert state_update is None
+        assert state_update is not None
+        assert state_update.get("_patch_scan_cursor") == len(input_messages)
+        assert state_update.get("_patch_answered_tool_ids") == ["123"]
+
+    def test_no_missing_tool_calls_skips_after_cursor_advance(self) -> None:
+        """Second pass should no-op when cursor and answered IDs are already up-to-date."""
+        input_messages = [
+            SystemMessage(content="You are a helpful assistant.", id="1"),
+            HumanMessage(content="Hello, how are you?", id="2"),
+            AIMessage(
+                content="I'm doing well, thank you!",
+                tool_calls=[ToolCall(id="123", name="get_events_for_days", args={"date_str": "2025-01-01"})],
+                id="3",
+            ),
+            ToolMessage(content="I have no events for that date.", tool_call_id="123", id="4"),
+            HumanMessage(content="What is the weather in Tokyo?", id="5"),
+        ]
+        middleware = PatchToolCallsMiddleware()
+        first_update = middleware.before_agent({"messages": input_messages}, None)
+        assert first_update is not None
+        second_state = {
+            "messages": input_messages,
+            "_patch_scan_cursor": len(input_messages),
+            "_patch_answered_tool_ids": ["123"],
+        }
+        second_update = middleware.before_agent(second_state, None)
+        assert second_update is None
 
     def test_two_missing_tool_calls(self) -> None:
         input_messages = [
@@ -3331,3 +3373,33 @@ class TestBuiltinTruncationTools:
 
         with pytest.raises(ValueError, match="max_execute_timeout must be positive"):
             FilesystemMiddleware(max_execute_timeout=-1)
+
+    def test_glob_runtime_knob_validation(self):
+        """FilesystemMiddleware should reject invalid glob worker/timeout values at init."""
+        with pytest.raises(ValueError, match="glob_sync_workers must be positive"):
+            FilesystemMiddleware(glob_sync_workers=0)
+        with pytest.raises(ValueError, match="glob_timeout_seconds must be positive"):
+            FilesystemMiddleware(glob_timeout_seconds=0)
+
+    def test_allow_parallel_edit_same_path_disables_preflight_block(self):
+        """When enabled, duplicate same-file edit calls are allowed through middleware preflight."""
+        middleware = FilesystemMiddleware(allow_parallel_edit_same_path=True)
+        request = ToolCallRequest(
+            tool_call={"id": "call-1", "name": "edit_file", "args": {"file_path": "/a.py"}},
+            state={
+                "messages": [
+                    AIMessage(
+                        content="edit",
+                        tool_calls=[
+                            ToolCall(id="call-1", name="edit_file", args={"file_path": "/a.py"}),
+                            ToolCall(id="call-2", name="edit_file", args={"file_path": "/a.py"}),
+                        ],
+                    )
+                ]
+            },
+            runtime=_runtime("call-1"),
+            tool=None,
+        )
+        success = ToolMessage(content="ok", name="edit_file", tool_call_id="call-1", status="success")
+        result = middleware.wrap_tool_call(request, lambda _req: success)
+        assert result is success

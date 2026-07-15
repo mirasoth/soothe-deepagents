@@ -847,6 +847,15 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         self.sources: list[str] = [_source_path(s) for s in sources]
         self.source_labels: list[str] = [_derive_source_label(s) for s in sources]
         self.system_prompt_template = system_prompt
+        self._skills_locations_text = self._format_skills_locations()
+        self._skills_section_cache_key: (
+            tuple[
+                tuple[tuple[str, str, str, str | None, str | None, tuple[tuple[str, str], ...], tuple[str, ...]], ...],
+                tuple[str, ...],
+            ]
+            | None
+        ) = None
+        self._skills_section_cache_value: str | None = None
 
     def _get_backend(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
         """Resolve backend from instance or factory.
@@ -927,6 +936,29 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         lines.append("</skill_load_warnings>")
         return "\n".join(lines)
 
+    @staticmethod
+    def _skills_snapshot_key(
+        skills_metadata: list[SkillMetadata],
+        skills_load_errors: list[str],
+    ) -> tuple[
+        tuple[tuple[str, str, str, str | None, str | None, tuple[tuple[str, str], ...], tuple[str, ...]], ...],
+        tuple[str, ...],
+    ]:
+        """Build a hashable snapshot key for rendered skills prompt content."""
+        metadata_snapshot = tuple(
+            (
+                skill["name"],
+                skill["description"],
+                skill["path"],
+                skill.get("license"),
+                skill.get("compatibility"),
+                tuple(sorted(skill.get("metadata", {}).items())),
+                tuple(skill.get("allowed_tools", [])),
+            )
+            for skill in skills_metadata
+        )
+        return metadata_snapshot, tuple(skills_load_errors)
+
     def modify_request(self, request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
         """Inject skills documentation into a model request's system message.
 
@@ -941,15 +973,19 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
         skills_metadata = request.state.get("skills_metadata", [])
         skills_load_errors = request.state.get("skills_load_errors", [])
-        skills_locations = self._format_skills_locations()
-        skills_list = self._format_skills_list(skills_metadata)
-        skills_load_warnings = self._format_skills_load_warnings(skills_load_errors)
-
-        skills_section = self.system_prompt_template.format(
-            skills_locations=skills_locations,
-            skills_load_warnings=skills_load_warnings,
-            skills_list=skills_list,
-        )
+        snapshot_key = self._skills_snapshot_key(skills_metadata, skills_load_errors)
+        if snapshot_key == self._skills_section_cache_key and self._skills_section_cache_value is not None:
+            skills_section = self._skills_section_cache_value
+        else:
+            skills_list = self._format_skills_list(skills_metadata)
+            skills_load_warnings = self._format_skills_load_warnings(skills_load_errors)
+            skills_section = self.system_prompt_template.format(
+                skills_locations=self._skills_locations_text,
+                skills_load_warnings=skills_load_warnings,
+                skills_list=skills_list,
+            )
+            self._skills_section_cache_key = snapshot_key
+            self._skills_section_cache_value = skills_section
 
         new_system_message = append_to_system_message(request.system_message, skills_section)
 
