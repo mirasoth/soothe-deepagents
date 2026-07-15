@@ -9,7 +9,7 @@ from langgraph.store.memory import InMemoryStore
 
 import soothe_deepagents.middleware.filesystem as filesystem_middleware
 from soothe_deepagents.backends import StateBackend, StoreBackend
-from soothe_deepagents.backends.protocol import ExecuteResponse, GrepResult, LsResult, SandboxBackendProtocol
+from soothe_deepagents.backends.protocol import DeleteResult, ExecuteResponse, GrepResult, LsResult, SandboxBackendProtocol
 from soothe_deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, TRUNCATION_GUIDANCE
 from soothe_deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemPermission, FilesystemState
 
@@ -898,6 +898,27 @@ class TestFilesystemMiddlewareAsync:
         )
         assert result.status == "error"
         assert "not found" in result.content
+
+    async def test_adelete_legacy_string_result_is_coerced_to_error(self):
+        """Async delete handles legacy backends that return string errors."""
+
+        class _LegacyDeleteStoreBackend(StoreBackend):
+            async def adelete(self, file_path: str) -> DeleteResult | str:
+                del file_path
+                return "Error: legacy delete failure"
+
+        backend = _LegacyDeleteStoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
+        middleware = FilesystemMiddleware(backend=backend)
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete")
+        result = await delete_tool.ainvoke(
+            {
+                "file_path": "/ghost.txt",
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="d4", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+
+        assert result.status == "error"
+        assert result.content == "legacy delete failure"
 
     async def test_adelete_permission_denied(self):
         """Async delete is blocked by a deny write permission."""

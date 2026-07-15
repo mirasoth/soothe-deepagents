@@ -2785,6 +2785,32 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """Create the delete tool."""
         tool_description = self._custom_tool_descriptions.get("delete") or DELETE_TOOL_DESCRIPTION
 
+        def _coerce_delete_result(raw_result: DeleteResult | str, *, op: str, file_path: str) -> DeleteResult:
+            """Normalize legacy delete returns to `DeleteResult`."""
+            if isinstance(raw_result, DeleteResult):
+                return raw_result
+            if isinstance(raw_result, str):
+                warn_deprecated(
+                    since="0.5.0",
+                    removal="0.7.0",
+                    message=(
+                        f"Returning a plain `str` from `backend.{op}()` is deprecated "
+                        "and will be removed in soothe_deepagents==0.7.0. "
+                        "Return a `DeleteResult` instead."
+                    ),
+                    package="soothe_deepagents",
+                )
+                legacy_text = raw_result.strip()
+                if legacy_text.lower().startswith("deleted "):
+                    legacy_path = legacy_text[8:].strip()
+                    return DeleteResult(path=legacy_path or file_path)
+                if legacy_text.lower().startswith("error:"):
+                    return DeleteResult(error=legacy_text[6:].strip() or legacy_text)
+                if legacy_text:
+                    return DeleteResult(error=legacy_text)
+                return DeleteResult(error=f"Error deleting '{file_path}': empty legacy result")
+            return DeleteResult(error=f"Error deleting '{file_path}': invalid result type {type(raw_result).__name__}")
+
         def sync_delete(  # noqa: C901, PLR0911
             file_path: str,
             runtime: ToolRuntime[None, FilesystemState],
@@ -2879,7 +2905,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         tool_call_id=runtime.tool_call_id,
                         status="error",
                     )
-            res: DeleteResult = resolved_backend.delete(validated_path)
+            res = _coerce_delete_result(resolved_backend.delete(validated_path), op="delete", file_path=validated_path)
             if res.error:
                 return ToolMessage(
                     content=res.error,
@@ -2988,7 +3014,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         tool_call_id=runtime.tool_call_id,
                         status="error",
                     )
-            res: DeleteResult = await resolved_backend.adelete(validated_path)
+            res = _coerce_delete_result(await resolved_backend.adelete(validated_path), op="adelete", file_path=validated_path)
             if res.error:
                 return ToolMessage(
                     content=res.error,
