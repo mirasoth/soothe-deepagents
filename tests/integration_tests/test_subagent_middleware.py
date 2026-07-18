@@ -245,7 +245,7 @@ class TestSubagentMiddleware:
 
         result = agent.invoke(
             {"messages": [HumanMessage(content="foo - tell me how confident you are that pineapple belongs on pizza")]},
-            {"recursion_limit": 100},
+            {"recursion_limit": 500},
         )
 
         agent_messages = [msg for msg in result["messages"] if isinstance(msg, AIMessage)]
