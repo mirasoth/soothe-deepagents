@@ -39,8 +39,9 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
 
-# Namespace factories receive a Runtime and return a namespace tuple.
-NamespaceFactory = Callable[["Runtime[Any]"], tuple[str, ...]]
+# Namespace factories receive a Runtime (or None outside graph execution)
+# and return a namespace tuple. Constant factories may ignore the argument.
+NamespaceFactory = Callable[["Runtime[Any] | None"], tuple[str, ...]]
 
 # Allowed characters in namespace components: alphanumeric, plus characters
 # common in user IDs (hyphen, underscore, dot, @, +, colon, tilde).
@@ -155,8 +156,8 @@ class StoreBackend(BackendProtocol):
         try:
             runtime = get_runtime()
         except (RuntimeError, KeyError):
-            runtime = None  # type: ignore[assignment]
-        return _validate_namespace(self._namespace(runtime))  # type: ignore[arg-type]
+            runtime = None
+        return _validate_namespace(self._namespace(runtime))
 
     def _convert_store_item_to_file_data(self, store_item: Item) -> FileData:
         """Convert a store `Item` to `FileData` format.
