@@ -2,6 +2,27 @@
 
 # Deep Agents Changelog
 
+## [0.7.24] - 2026-07-20
+
+### Added
+- Public skill helpers: `parse_skill_metadata`, `list_skills`, `list_skills_with_errors`, async variants, and `strip_skill_frontmatter`
+- Optional skill frontmatter fields: `paths`, `when_to_use`, `core`, `tags` (omitted when unset)
+- `FilesystemBackend.edit_locks` property for shared per-path edit serialization
+
+### Changed
+- Re-export skill parse/list helpers from `soothe_deepagents.middleware`
+
+## [0.7.23] - 2026-07-20
+
+### Added
+- Filesystem safety on `FilesystemBackend`: atomic writes, optional backups (`backup_path`), per-path edit locks, optimistic version stamps, and `aedit_batched`
+- Protocol types `BatchedEditOperation` / `BatchedEditResult` and optional `backup=` on write/edit/delete
+- Public `FilesystemBackend.ripgrep_search` / `python_search` search helpers
+- Glob discovery hints in filesystem middleware tool descriptions
+
+### Changed
+- All in-tree backends accept `backup=` (no-op where not applicable)
+
 ## [0.6.12](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.11...deepagents==0.6.12) (2026-06-25)
 
 This release adds the `deepagents[aws]` extra, which installs `langchain-aws` so Bedrock users get the automatic prompt caching integration added in [#4108](https://github.com/langchain-ai/deepagents/issues/4108).
