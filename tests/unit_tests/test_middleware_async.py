@@ -422,7 +422,8 @@ class TestFilesystemMiddlewareAsync:
                 }
             )
 
-        assert result.content == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
+        assert "glob timed out after 0.5s" in result.content
+        assert "narrower directory" in result.content or "more specific pattern" in result.content
 
     async def test_glob_surfaces_backend_exception_as_error_async(self):
         """A non-timeout exception from the backend aglob is returned as a tool error, not propagated."""

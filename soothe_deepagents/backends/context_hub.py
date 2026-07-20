@@ -171,7 +171,7 @@ class ContextHubBackend(BackendProtocol):
             )
         )
 
-    def write(self, file_path: str, content: str) -> WriteResult:
+    def write(self, file_path: str, content: str, *, backup: bool = False) -> WriteResult:  # noqa: ARG002
         """Commit `content` to `file_path`."""
         hub_path = self._strip_prefix(file_path)
         try:
@@ -189,6 +189,8 @@ class ContextHubBackend(BackendProtocol):
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        backup: bool = False,  # noqa: ARG002
     ) -> EditResult:
         """Replace `old_string` with `new_string` in a file."""
         hub_path = self._strip_prefix(file_path)
@@ -210,7 +212,7 @@ class ContextHubBackend(BackendProtocol):
             return EditResult(error=f"Hub unavailable: {exc}")
         return EditResult(path=file_path, occurrences=occurrences)
 
-    def delete(self, file_path: str) -> DeleteResult:
+    def delete(self, file_path: str, *, backup: bool = False) -> DeleteResult:  # noqa: ARG002, D417
         """Delete a file or directory by committing its removal from the hub repo.
 
         Deleting a path removes the exact file plus every nested entry under it

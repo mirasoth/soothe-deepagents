@@ -1007,12 +1007,15 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         self,
         file_path: str,
         content: str,
+        *,
+        backup: bool = False,  # noqa: ARG002
     ) -> WriteResult:
         """Write content to a file, creating or overwriting it if it already exists.
 
         Args:
             file_path: Absolute path for the file.
             content: UTF-8 text content to write.
+            backup: Accepted for protocol compatibility; not implemented for sandboxes.
 
         Returns:
             `WriteResult` with `path` on success or `error` on failure.
@@ -1032,7 +1035,13 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
 
         return WriteResult(path=file_path)
 
-    async def awrite(self, file_path: str, content: str) -> WriteResult:
+    async def awrite(
+        self,
+        file_path: str,
+        content: str,
+        *,
+        backup: bool = False,  # noqa: ARG002
+    ) -> WriteResult:
         """Async version of `write`, delegating to `aexecute` and `aupload_files`."""
         preflight_error = await self._awrite_preflight(file_path)
         if preflight_error is not None:
@@ -1052,6 +1061,8 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        backup: bool = False,  # noqa: ARG002
     ) -> EditResult:
         """Edit a file by replacing exact string occurrences.
 
@@ -1077,6 +1088,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
 
                 If `False` (default), error when more than one
                 occurrence exists.
+            backup: Accepted for protocol compatibility; not implemented for sandboxes.
 
         Returns:
             `EditResult` with `path` and `occurrences` on success, or `error`
@@ -1095,6 +1107,8 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        backup: bool = False,  # noqa: ARG002
     ) -> EditResult:
         """Async version of `edit`, delegating to `aexecute` and `aupload_files`."""
         payload_size = len(old_string.encode("utf-8")) + len(new_string.encode("utf-8"))
@@ -1234,7 +1248,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
 
         return EditResult(path=file_path, occurrences=data.get("count", 1))
 
-    def delete(self, file_path: str) -> DeleteResult:
+    def delete(self, file_path: str, *, backup: bool = False) -> DeleteResult:  # noqa: ARG002, D417
         """Delete a file or directory from the sandbox via a server-side `rm`.
 
         Runs `test -e || test -L` first: a path that does not exist (and is not

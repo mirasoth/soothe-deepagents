@@ -13,6 +13,12 @@ from datetime import datetime
 from pathlib import Path
 
 from soothe_deepagents._api.deprecation import warn_deprecated
+from soothe_deepagents.backends.edit_locks import FileEditLockRegistry
+from soothe_deepagents.backends.fs_safety import (
+    compute_version_stamp,
+    create_backup,
+    write_atomic,
+)
 from soothe_deepagents.backends.protocol import (
     DEFAULT_GREP_TIMEOUT,
     FILE_NOT_FOUND,
@@ -20,6 +26,8 @@ from soothe_deepagents.backends.protocol import (
     IS_DIRECTORY,
     PERMISSION_DENIED,
     BackendProtocol,
+    BatchedEditOperation,
+    BatchedEditResult,
     DeleteResult,
     EditResult,
     FileData,
@@ -130,6 +138,8 @@ class FilesystemBackend(BackendProtocol):
         root_dir: str | Path | None = None,
         virtual_mode: bool | None = None,  # noqa: FBT001
         max_file_size_mb: int = 10,
+        *,
+        backup_dir: str | Path = ".backups",
     ) -> None:
         """Initialize filesystem backend.
 
@@ -163,6 +173,8 @@ class FilesystemBackend(BackendProtocol):
                 grep's Python fallback search.
 
                 Files exceeding this limit are skipped during search. Defaults to 10 MB.
+            backup_dir: Relative (to `root_dir`/`cwd`) or absolute directory used
+                when `backup=True` on write/edit/delete.
         """
         self.cwd = Path(root_dir).resolve() if root_dir else Path.cwd()
         if virtual_mode is None:
@@ -185,6 +197,8 @@ class FilesystemBackend(BackendProtocol):
             virtual_mode = False
         self.virtual_mode = virtual_mode
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
+        self._backup_dir = Path(backup_dir)
+        self._edit_locks = FileEditLockRegistry()
 
     def _resolve_path(self, key: str) -> Path:
         """Resolve a file path with security checks.
@@ -486,19 +500,42 @@ class FilesystemBackend(BackendProtocol):
         except (OSError, UnicodeDecodeError) as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")
 
+    def _resolved_backup_dir(self) -> Path:
+        """Return the absolute backup directory for this backend."""
+        if self._backup_dir.is_absolute():
+            return self._backup_dir
+        return self.cwd / self._backup_dir
+
+    def _backup_result_path(self, backup: Path | None) -> str | None:
+        """Format a backup path for result objects (prefer cwd-relative)."""
+        if backup is None:
+            return None
+        try:
+            return str(backup.resolve().relative_to(self.cwd))
+        except ValueError:
+            return str(backup)
+
     def write(
         self,
         file_path: str,
         content: str,
+        *,
+        backup: bool = False,
     ) -> WriteResult:
-        """Write content to a file, creating it or overwriting it if it already exists.
+        """Write content to a file via atomic temp-file + ``os.replace``.
 
         Args:
             file_path: Path where the file will be written.
             content: Text content to write to the file.
+            backup: When True and the target already exists, copy it into
+                ``backup_dir`` before overwriting.
 
         Returns:
             `WriteResult` with path on success, or error message on write failure.
+
+        Note:
+            Atomic rename requires the temp file and target to share a
+            filesystem volume (temp is created beside the target).
         """
         try:
             resolved_path = self._resolve_path(file_path)
@@ -506,20 +543,21 @@ class FilesystemBackend(BackendProtocol):
             return WriteResult(error=f"Error writing file '{file_path}': {e}")
 
         try:
-            # Create parent directories if needed
-            resolved_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Prefer O_NOFOLLOW to avoid writing through symlinks
-            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-            if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
-            fd = os.open(resolved_path, flags, 0o644)
-            # newline="" disables Windows CRLF translation so callers that
-            # pass LF-only content get LF-only bytes on disk.
-            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
-                f.write(content)
-
-            return WriteResult(path=file_path)
+            with self._edit_locks.acquire_sync(resolved_path):
+                for attempt in range(2):
+                    stamp_before = compute_version_stamp(resolved_path)
+                    backup_path: Path | None = None
+                    if backup and resolved_path.exists() and resolved_path.is_file():
+                        backup_path = create_backup(resolved_path, backup_dir=self._resolved_backup_dir())
+                    stamp_after = compute_version_stamp(resolved_path)
+                    if stamp_before != stamp_after and attempt == 0:
+                        continue
+                    write_atomic(resolved_path, content)
+                    return WriteResult(
+                        path=file_path,
+                        backup_path=self._backup_result_path(backup_path),
+                    )
+            return WriteResult(error=f"Error writing file '{file_path}': concurrent modification")
         except (OSError, UnicodeEncodeError) as e:
             return WriteResult(error=f"Error writing file '{file_path}': {e}")
 
@@ -529,8 +567,13 @@ class FilesystemBackend(BackendProtocol):
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        backup: bool = False,
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
+
+        Uses a per-path lock, optimistic version stamps (mtime+size), and
+        atomic commit. Retries once on concurrent external modification.
 
         Args:
             file_path: Path to the file to edit.
@@ -538,6 +581,7 @@ class FilesystemBackend(BackendProtocol):
             new_string: The replacement text.
             replace_all: If `True`, replace all occurrences. If `False` (default),
                 replace only if exactly one occurrence exists.
+            backup: When True, copy the file into ``backup_dir`` before editing.
 
         Returns:
             `EditResult` with path and occurrence count on success, or error
@@ -552,40 +596,45 @@ class FilesystemBackend(BackendProtocol):
             if not resolved_path.exists() or not resolved_path.is_file():
                 return EditResult(error=f"Error: File '{file_path}' not found")
 
-            # Read securely
-            fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-            with os.fdopen(fd, "r", encoding="utf-8") as f:
-                content = f.read()
-
             # Normalize line endings in old_string/new_string to match the
-            # text-mode read above. Python universal newlines (the default
+            # text-mode read below. Python universal newlines (the default
             # when newline=None) converts \r\n and bare \r to \n on read.
-            # Callers that obtained content via binary-mode reads (e.g.
-            # download_files) may pass strings with \r\n or \r that would
-            # fail to match the \n-only content.
             old_string = old_string.replace("\r\n", "\n").replace("\r", "\n")
             new_string = new_string.replace("\r\n", "\n").replace("\r", "\n")
 
-            result = perform_string_replacement(content, old_string, new_string, replace_all)
+            with self._edit_locks.acquire_sync(resolved_path):
+                for attempt in range(2):
+                    stamp_before = compute_version_stamp(resolved_path)
 
-            if isinstance(result, str):
-                return EditResult(error=result)
+                    fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                    with os.fdopen(fd, "r", encoding="utf-8") as f:
+                        content = f.read()
 
-            new_content, occurrences = result
+                    result = perform_string_replacement(content, old_string, new_string, replace_all)
+                    if isinstance(result, str):
+                        return EditResult(error=result)
 
-            # Write securely
-            flags = os.O_WRONLY | os.O_TRUNC
-            if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
-            fd = os.open(resolved_path, flags)
-            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
-                f.write(new_content)
+                    new_content, occurrences = result
 
-            return EditResult(path=file_path, occurrences=int(occurrences))
+                    backup_path: Path | None = None
+                    if backup:
+                        backup_path = create_backup(resolved_path, backup_dir=self._resolved_backup_dir())
+
+                    stamp_after = compute_version_stamp(resolved_path)
+                    if stamp_before != stamp_after and attempt == 0:
+                        continue
+
+                    write_atomic(resolved_path, new_content)
+                    return EditResult(
+                        path=file_path,
+                        occurrences=int(occurrences),
+                        backup_path=self._backup_result_path(backup_path),
+                    )
+            return EditResult(error=f"Error editing file '{file_path}': concurrent modification")
         except (OSError, UnicodeDecodeError, UnicodeEncodeError) as e:
             return EditResult(error=f"Error editing file '{file_path}': {e}")
 
-    def delete(self, file_path: str) -> DeleteResult:
+    def delete(self, file_path: str, *, backup: bool = False) -> DeleteResult:
         """Delete a file or directory from the filesystem.
 
         Files are unlinked. Directories are removed recursively along with all
@@ -594,6 +643,8 @@ class FilesystemBackend(BackendProtocol):
 
         Args:
             file_path: Path to the file or directory to delete.
+            backup: When True and the path is a regular file, copy it into
+                ``backup_dir`` before deletion.
 
         Returns:
             `DeleteResult` with the deleted path on success, or an error if the
@@ -609,15 +660,139 @@ class FilesystemBackend(BackendProtocol):
         try:
             if not resolved_path.exists() and not resolved_path.is_symlink():
                 return DeleteResult(error=f"Error: '{file_path}' not found")
+            backup_path: Path | None = None
+            if backup and resolved_path.is_file() and not resolved_path.is_symlink():
+                backup_path = create_backup(resolved_path, backup_dir=self._resolved_backup_dir())
             if resolved_path.is_symlink():
                 resolved_path.unlink()
             elif resolved_path.is_dir():
                 shutil.rmtree(resolved_path)
             else:
                 resolved_path.unlink()
-            return DeleteResult(path=file_path)
+            return DeleteResult(
+                path=file_path,
+                backup_path=self._backup_result_path(backup_path),
+            )
         except (OSError, RuntimeError) as e:
             return DeleteResult(error=f"Error deleting '{file_path}': {e}")
+
+    async def aedit_batched(  # noqa: C901, PLR0911, PLR0912, PLR0915
+        self,
+        file_path: str,
+        operations: list[BatchedEditOperation],
+        *,
+        backup: bool = False,
+    ) -> BatchedEditResult:
+        """Apply multiple line-oriented edits in one atomic read/modify/write.
+
+        Operations are applied in-memory then committed via atomic rename.
+        Overlapping replace ranges fail fast. Concurrent external writers
+        trigger one retry via version stamps.
+
+        Args:
+            file_path: Path to the file to edit.
+            operations: Line edits to apply (delete → insert → replace order).
+            backup: When True, create a backup before writing.
+
+        Returns:
+            `BatchedEditResult` with apply counts or an error.
+        """
+        try:
+            resolved_path = self._resolve_path(file_path)
+        except (OSError, RuntimeError) as e:
+            return BatchedEditResult(path=file_path, error=f"Error editing '{file_path}': {e}")
+
+        if not resolved_path.exists() or not resolved_path.is_file():
+            return BatchedEditResult(path=file_path, error=f"Error: File '{file_path}' not found")
+
+        deletions = [op for op in operations if op.operation_type == "delete"]
+        insertions = [op for op in operations if op.operation_type == "insert"]
+        replacements = [op for op in operations if op.operation_type == "replace"]
+
+        for i, op_a in enumerate(replacements):
+            for op_b in replacements[i + 1 :]:
+                if op_a.start_line <= op_b.end_line and op_b.start_line <= op_a.end_line:
+                    return BatchedEditResult(
+                        path=file_path,
+                        error=(f"Overlapping edits: lines {op_a.start_line}-{op_a.end_line} and {op_b.start_line}-{op_b.end_line}"),
+                        failed_operations=[
+                            op_a.original_call_id or "",
+                            op_b.original_call_id or "",
+                        ],
+                    )
+
+        async with self._edit_locks.acquire(resolved_path):
+            for attempt in range(2):
+                stamp_before = compute_version_stamp(resolved_path)
+                try:
+                    fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                    with os.fdopen(fd, "r", encoding="utf-8") as f:
+                        content = f.read()
+                except (OSError, UnicodeDecodeError) as e:
+                    return BatchedEditResult(path=file_path, error=f"Error reading '{file_path}': {e}")
+
+                lines = content.splitlines(keepends=True)
+                backup_path: Path | None = None
+                if backup:
+                    backup_path = create_backup(resolved_path, backup_dir=self._resolved_backup_dir())
+
+                stamp_after = compute_version_stamp(resolved_path)
+                if stamp_before != stamp_after and attempt == 0:
+                    continue
+
+                total_lines_changed = 0
+                operations_applied = 0
+                failed_ops: list[str] = []
+
+                for op in sorted(deletions, key=lambda o: o.start_line, reverse=True):
+                    if op.start_line < 1 or op.end_line > len(lines) or op.start_line > op.end_line:
+                        failed_ops.append(op.original_call_id or "")
+                        continue
+                    lines = lines[: op.start_line - 1] + lines[op.end_line :]
+                    total_lines_changed += op.end_line - op.start_line + 1
+                    operations_applied += 1
+
+                for op in sorted(insertions, key=lambda o: o.start_line):
+                    if op.start_line < 1 or op.start_line > len(lines) + 1:
+                        failed_ops.append(op.original_call_id or "")
+                        continue
+                    new_lines = op.content.split("\n")
+                    if new_lines and new_lines[-1] == "":
+                        new_lines = new_lines[:-1]
+                    formatted = [line + "\n" for line in new_lines]
+                    lines = lines[: op.start_line - 1] + formatted + lines[op.start_line - 1 :]
+                    total_lines_changed += len(formatted)
+                    operations_applied += 1
+
+                for op in sorted(replacements, key=lambda o: o.start_line, reverse=True):
+                    if op.start_line < 1 or op.end_line > len(lines) or op.start_line > op.end_line:
+                        failed_ops.append(op.original_call_id or "")
+                        continue
+                    new_lines = op.content.split("\n")
+                    if new_lines and new_lines[-1] == "":
+                        new_lines = new_lines[:-1]
+                    formatted = [line + "\n" for line in new_lines]
+                    lines = lines[: op.start_line - 1] + formatted + lines[op.end_line :]
+                    total_lines_changed += max(op.end_line - op.start_line + 1, len(formatted))
+                    operations_applied += 1
+
+                try:
+                    write_atomic(resolved_path, "".join(lines))
+                except (OSError, UnicodeEncodeError) as e:
+                    return BatchedEditResult(path=file_path, error=f"Error writing '{file_path}': {e}")
+
+                return BatchedEditResult(
+                    path=file_path,
+                    operations_applied=operations_applied,
+                    failed_operations=failed_ops or None,
+                    backup_path=self._backup_result_path(backup_path),
+                    total_lines_changed=total_lines_changed,
+                )
+
+        return BatchedEditResult(
+            path=file_path,
+            error=f"Error editing '{file_path}': concurrent modification",
+        )
 
     def grep(
         self,
@@ -654,11 +829,11 @@ class FilesystemBackend(BackendProtocol):
             return GrepResult(error=f"Error searching path '{search_path}': {e}", matches=[])
 
         # Try ripgrep first (with -F flag for literal search)
-        results, truncated = self._ripgrep_search(pattern, base_full, glob)
+        results, truncated = self.ripgrep_search(pattern, base_full, glob)
         partial_error: str | None = None
         if results is None:
             # Python fallback does literal substring matching on the raw pattern.
-            results, truncated, partial_error = self._python_search(pattern, base_full, glob)
+            results, truncated, partial_error = self.python_search(pattern, base_full, glob)
 
         matches: list[GrepMatch] = []
         for fpath, items in results.items():
@@ -666,8 +841,11 @@ class FilesystemBackend(BackendProtocol):
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
         return GrepResult(error=partial_error, matches=matches, truncated=truncated)
 
-    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> tuple[dict[str, list[tuple[int, str]]] | None, bool]:  # noqa: C901, PLR0912, PLR0915  # except clauses split per-exception for targeted logging (timeout vs exec-race vs ripgrep hard-error)
+    def ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> tuple[dict[str, list[tuple[int, str]]] | None, bool]:  # noqa: C901, PLR0912, PLR0915  # except clauses split per-exception for targeted logging (timeout vs exec-race vs ripgrep hard-error)
         """Search using ripgrep with fixed-string (literal) mode.
+
+        Public entry point for consumers that need ripgrep without going
+        through `grep` (e.g. nano thin grep wrappers).
 
         Args:
             pattern: Literal string to search for (unescaped).
@@ -812,7 +990,7 @@ class FilesystemBackend(BackendProtocol):
 
         return results, truncated
 
-    def _python_search(  # noqa: C901, PLR0912, PLR0915
+    def python_search(  # noqa: C901, PLR0912, PLR0915
         self,
         pattern: str,
         base_full: Path,
@@ -821,6 +999,9 @@ class FilesystemBackend(BackendProtocol):
         timeout: int = DEFAULT_GREP_TIMEOUT,
     ) -> tuple[dict[str, list[tuple[int, str]]], bool, str | None]:
         """Fallback search using Python when ripgrep is unavailable.
+
+        Public entry point for consumers that need the Python substring
+        search without going through `grep`.
 
         Recursively searches files, respecting `max_file_size_bytes` limit
         and a wall-clock timeout.

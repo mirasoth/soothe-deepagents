@@ -16,8 +16,10 @@ def test_version_matches_pyproject() -> None:
     with pyproject_path.open("rb") as f:
         pyproject_data = tomllib.load(f)
 
-    assert pyproject_data["project"].get("dynamic") == ["version"]
-    assert pyproject_data["project"]["name"] == "soothe-deepagents"
+    project = pyproject_data["project"]
+    assert "dynamic" not in project or "version" not in project.get("dynamic", [])
+    assert project["name"] == "soothe-deepagents"
+    assert project["version"] == init_version
     assert init_version.count(".") == 2
 
 

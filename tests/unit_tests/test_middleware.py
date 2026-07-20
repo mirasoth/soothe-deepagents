@@ -547,7 +547,9 @@ class TestFilesystemMiddleware:
             )
             elapsed = time.monotonic() - start
 
-        assert result.content == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
+        assert "glob timed out after 0.5s" in result.content
+        assert "narrower directory" in result.content or "more specific pattern" in result.content
+
         # The tool must return as soon as the timeout fires, not block until
         # the runaway glob (2s) finishes in its worker thread.
         assert elapsed < 1.5, f"glob tool blocked for {elapsed:.2f}s past its 0.5s timeout"

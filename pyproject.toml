@@ -1,6 +1,6 @@
 [project]
 name = "soothe-deepagents"
-dynamic = ["version"]
+version = "0.7.23"
 
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"
@@ -75,9 +75,6 @@ include = ["soothe_deepagents*"]
 
 [tool.setuptools.package-data]
 "*" = ["py.typed", "*.md"]
-
-[tool.setuptools.dynamic]
-version = { attr = "soothe_deepagents._version.__version__" }
 
 [tool.ruff]
 line-length = 150

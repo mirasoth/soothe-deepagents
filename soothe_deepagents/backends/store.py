@@ -602,6 +602,8 @@ class StoreBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        *,
+        backup: bool = False,  # noqa: ARG002
     ) -> WriteResult:
         """Write content to a file, creating it or overwriting it if it already exists.
 
@@ -624,6 +626,8 @@ class StoreBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        *,
+        backup: bool = False,  # noqa: ARG002
     ) -> WriteResult:
         """Async version of write using native store async methods.
 
@@ -648,6 +652,8 @@ class StoreBackend(BackendProtocol):
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        backup: bool = False,  # noqa: ARG002
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
 
@@ -686,6 +692,8 @@ class StoreBackend(BackendProtocol):
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        backup: bool = False,  # noqa: ARG002
     ) -> EditResult:
         """Async version of edit using native store async methods.
 
@@ -718,7 +726,7 @@ class StoreBackend(BackendProtocol):
         await store.aput(namespace, file_path, store_value)
         return EditResult(path=file_path, occurrences=int(occurrences))
 
-    def delete(self, file_path: str) -> DeleteResult:
+    def delete(self, file_path: str, *, backup: bool = False) -> DeleteResult:  # noqa: ARG002, D417
         """Delete a file or directory from the store.
 
         Deleting a path removes the exact key `file_path` plus every key nested
@@ -746,7 +754,7 @@ class StoreBackend(BackendProtocol):
         store.batch([PutOp(namespace, key, None) for key in to_delete])
         return DeleteResult(path=file_path)
 
-    async def adelete(self, file_path: str) -> DeleteResult:
+    async def adelete(self, file_path: str, *, backup: bool = False) -> DeleteResult:  # noqa: ARG002
         """Async version of `delete` using native store async methods."""
         store = self._get_store()
         namespace = self._get_namespace()

@@ -251,6 +251,8 @@ class StateBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        *,
+        backup: bool = False,  # noqa: ARG002
     ) -> WriteResult:
         """Write content to a file, creating it or overwriting it if it already exists.
 
@@ -269,6 +271,8 @@ class StateBackend(BackendProtocol):
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        backup: bool = False,  # noqa: ARG002
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
 
@@ -291,7 +295,7 @@ class StateBackend(BackendProtocol):
         self._send_files_update({file_path: self._prepare_for_storage(new_file_data)})
         return EditResult(path=file_path, occurrences=int(occurrences))
 
-    def delete(self, file_path: str) -> DeleteResult:
+    def delete(self, file_path: str, *, backup: bool = False) -> DeleteResult:  # noqa: ARG002, D417
         """Delete a file or directory from state.
 
         Deleting a path removes the exact file at `file_path` plus every nested

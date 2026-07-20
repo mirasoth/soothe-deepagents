@@ -551,18 +551,21 @@ class CompositeBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        *,
+        backup: bool = False,
     ) -> WriteResult:
         """Create a new file, routing to appropriate backend.
 
         Args:
             file_path: Absolute file path.
             content: File content as a string.
+            backup: Forwarded to the routed backend.
 
         Returns:
             Success message or `Command` object, or error if file already exists.
         """
         backend, stripped_key = self._get_backend_and_key(file_path)
-        res = backend.write(stripped_key, content)
+        res = backend.write(stripped_key, content, backup=backup)
         if res.path is not None:
             res.path = file_path
         return res
@@ -571,10 +574,12 @@ class CompositeBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        *,
+        backup: bool = False,
     ) -> WriteResult:
         """Async version of write."""
         backend, stripped_key = self._get_backend_and_key(file_path)
-        res = await backend.awrite(stripped_key, content)
+        res = await backend.awrite(stripped_key, content, backup=backup)
         if res.path is not None:
             res.path = file_path
         return res
@@ -585,6 +590,8 @@ class CompositeBackend(BackendProtocol):
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        backup: bool = False,
     ) -> EditResult:
         """Edit a file, routing to appropriate backend.
 
@@ -593,12 +600,13 @@ class CompositeBackend(BackendProtocol):
             old_string: String to find and replace.
             new_string: Replacement string.
             replace_all: If `True`, replace all occurrences.
+            backup: Forwarded to the routed backend.
 
         Returns:
             Success message or `Command` object, or error message on failure.
         """
         backend, stripped_key = self._get_backend_and_key(file_path)
-        res = backend.edit(stripped_key, old_string, new_string, replace_all=replace_all)
+        res = backend.edit(stripped_key, old_string, new_string, replace_all=replace_all, backup=backup)
         if res.path is not None:
             res.path = file_path
         return res
@@ -609,15 +617,17 @@ class CompositeBackend(BackendProtocol):
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        backup: bool = False,
     ) -> EditResult:
         """Async version of edit."""
         backend, stripped_key = self._get_backend_and_key(file_path)
-        res = await backend.aedit(stripped_key, old_string, new_string, replace_all=replace_all)
+        res = await backend.aedit(stripped_key, old_string, new_string, replace_all=replace_all, backup=backup)
         if res.path is not None:
             res.path = file_path
         return res
 
-    def delete(self, file_path: str) -> DeleteResult:
+    def delete(self, file_path: str, *, backup: bool = False) -> DeleteResult:
         """Delete a file, routing to the appropriate backend.
 
         `CompositeBackend` always advertises delete support (it overrides this
@@ -628,6 +638,7 @@ class CompositeBackend(BackendProtocol):
 
         Args:
             file_path: Absolute file path.
+            backup: Forwarded to the routed backend.
 
         Returns:
             `DeleteResult` with the original path on success, or an error
@@ -635,18 +646,18 @@ class CompositeBackend(BackendProtocol):
         """
         backend, stripped_key = self._get_backend_and_key(file_path)
         try:
-            res = backend.delete(stripped_key)
+            res = backend.delete(stripped_key, backup=backup)
         except NotImplementedError:
             return DeleteResult(error=_DELETE_UNSUPPORTED_ERROR.format(file_path=file_path))
         if res.path is not None:
             res.path = file_path
         return res
 
-    async def adelete(self, file_path: str) -> DeleteResult:
+    async def adelete(self, file_path: str, *, backup: bool = False) -> DeleteResult:
         """Async version of delete."""
         backend, stripped_key = self._get_backend_and_key(file_path)
         try:
-            res = await backend.adelete(stripped_key)
+            res = await backend.adelete(stripped_key, backup=backup)
         except NotImplementedError:
             return DeleteResult(error=_DELETE_UNSUPPORTED_ERROR.format(file_path=file_path))
         if res.path is not None:

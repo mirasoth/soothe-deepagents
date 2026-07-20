@@ -1,7 +1,14 @@
-"""Version information for ``soothe_deepagents`` (SDK)."""
+"""Version information for ``soothe_deepagents``.
 
-# Do not remove the `x-release-please-version` annotation below — release-please
-# uses it to keep `__version__` in sync with `pyproject.toml` on every release
-# PR. Without it, `__version__` silently drifts behind the package version. See
-# `.github/RELEASING.md` > Version Bumping.
-__version__ = "0.7.22"  # x-release-please-version
+Canonical version lives in ``pyproject.toml`` ``[project].version``.
+This module re-exports the installed package metadata for runtime use.
+"""
+
+from __future__ import annotations
+
+import importlib.metadata
+
+try:
+    __version__ = importlib.metadata.version("soothe-deepagents")
+except importlib.metadata.PackageNotFoundError:  # pragma: no cover
+    __version__ = "0.0.0"

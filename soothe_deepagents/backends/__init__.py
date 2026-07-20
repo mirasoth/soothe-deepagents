@@ -2,10 +2,15 @@
 
 from soothe_deepagents.backends.composite import CompositeBackend
 from soothe_deepagents.backends.context_hub import ContextHubBackend
+from soothe_deepagents.backends.edit_locks import FileEditLockRegistry
 from soothe_deepagents.backends.filesystem import FilesystemBackend
 from soothe_deepagents.backends.langsmith import LangSmithSandbox
 from soothe_deepagents.backends.local_shell import DEFAULT_EXECUTE_TIMEOUT, LocalShellBackend
-from soothe_deepagents.backends.protocol import BackendProtocol
+from soothe_deepagents.backends.protocol import (
+    BackendProtocol,
+    BatchedEditOperation,
+    BatchedEditResult,
+)
 from soothe_deepagents.backends.state import StateBackend
 from soothe_deepagents.backends.store import (
     BackendContext,
@@ -17,8 +22,11 @@ __all__ = [
     "DEFAULT_EXECUTE_TIMEOUT",
     "BackendContext",
     "BackendProtocol",
+    "BatchedEditOperation",
+    "BatchedEditResult",
     "CompositeBackend",
     "ContextHubBackend",
+    "FileEditLockRegistry",
     "FilesystemBackend",
     "LangSmithSandbox",
     "LocalShellBackend",

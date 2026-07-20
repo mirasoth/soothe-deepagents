@@ -231,6 +231,7 @@ class WriteResult:
     Attributes:
         error: Error message on failure, `None` on success.
         path: Absolute path of written file, `None` on failure.
+        backup_path: Path to a backup file when one was created, else `None`.
 
     Examples:
         >>> WriteResult(path="/f.txt")
@@ -240,17 +241,20 @@ class WriteResult:
     error: str | None
     path: str | None
     files_update: dict[str, Any] | None
+    backup_path: str | None
 
     def __init__(
         self,
         error: str | None = None,
         path: str | None = None,
         files_update: dict[str, Any] | None | _Unset = Unset,
+        backup_path: str | None = None,
     ) -> None:
         """Initialize WriteResult."""
         self.error = error
         self.path = path
         self.files_update = _normalize_files_update(files_update)
+        self.backup_path = backup_path
 
 
 @dataclass(init=False)
@@ -261,6 +265,7 @@ class EditResult:
         error: Error message on failure, `None` on success.
         path: Absolute path of edited file, `None` on failure.
         occurrences: Number of replacements made, `None` on failure.
+        backup_path: Path to a backup file when one was created, else `None`.
 
     Examples:
         >>> EditResult(path="/f.txt", occurrences=1)
@@ -271,6 +276,7 @@ class EditResult:
     path: str | None
     files_update: dict[str, Any] | None
     occurrences: int | None
+    backup_path: str | None
 
     def __init__(
         self,
@@ -278,12 +284,14 @@ class EditResult:
         path: str | None = None,
         files_update: dict[str, Any] | None | _Unset = Unset,
         occurrences: int | None = None,
+        backup_path: str | None = None,
     ) -> None:
         """Initialize edit result."""
         self.error = error
         self.path = path
         self.files_update = _normalize_files_update(files_update)
         self.occurrences = occurrences
+        self.backup_path = backup_path
 
 
 @dataclass
@@ -293,6 +301,7 @@ class DeleteResult:
     Attributes:
         error: Error message on failure, None on success.
         path: Absolute path of the deleted file, None on failure.
+        backup_path: Path to a backup file when one was created, else `None`.
 
     Examples:
         >>> DeleteResult(path="/f.txt")
@@ -301,6 +310,48 @@ class DeleteResult:
 
     error: str | None = None
     path: str | None = None
+    backup_path: str | None = None
+
+
+@dataclass(frozen=True)
+class BatchedEditOperation:
+    """Single line-oriented edit within a batched apply.
+
+    Attributes:
+        operation_type: ``"replace"``, ``"insert"``, or ``"delete"``.
+        start_line: First line (1-indexed, inclusive).
+        end_line: Last line (1-indexed, inclusive). For insert, use
+            ``start_line - 1``.
+        content: New content for replace/insert (empty for delete).
+        original_call_id: Optional ID of the originating tool call.
+    """
+
+    operation_type: str
+    start_line: int
+    end_line: int
+    content: str = ""
+    original_call_id: str | None = None
+
+
+@dataclass(frozen=True)
+class BatchedEditResult:
+    """Result of a batched line-edit apply.
+
+    Attributes:
+        path: Path that was edited (or attempted).
+        error: Error message when the batch failed, else ``None``.
+        operations_applied: Count of operations successfully applied.
+        failed_operations: Optional list of originating call IDs that failed.
+        backup_path: Backup path when one was created.
+        total_lines_changed: Approximate lines touched across operations.
+    """
+
+    path: str
+    error: str | None = None
+    operations_applied: int = 0
+    failed_operations: list[str] | None = None
+    backup_path: str | None = None
+    total_lines_changed: int = 0
 
 
 @dataclass
@@ -570,6 +621,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         self,
         file_path: str,
         content: str,
+        *,
+        backup: bool = False,
     ) -> WriteResult:
         """Write content to a file, creating it or overwriting it if it already exists.
 
@@ -578,6 +631,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
                 Must start with '/'.
             content: String content to write to the file.
+            backup: When True, backends that support it may create a backup
+                before overwriting an existing file.
 
         Returns:
             WriteResult
@@ -588,9 +643,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         self,
         file_path: str,
         content: str,
+        *,
+        backup: bool = False,
     ) -> WriteResult:
         """Async version of write."""
-        return await asyncio.to_thread(self.write, file_path, content)
+        return await asyncio.to_thread(self.write, file_path, content, backup=backup)
 
     def edit(
         self,
@@ -598,6 +655,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        backup: bool = False,
     ) -> EditResult:
         """Perform exact string replacements in an existing file.
 
@@ -613,6 +672,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
                 If `False` (default), `old_string` must be unique in the file or
                 the edit fails.
+            backup: When True, backends that support it may create a backup
+                before editing.
 
         Returns:
             EditResult
@@ -625,11 +686,13 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         old_string: str,
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        backup: bool = False,
     ) -> EditResult:
         """Async version of edit."""
-        return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all)
+        return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all, backup=backup)
 
-    def delete(self, file_path: str) -> DeleteResult:
+    def delete(self, file_path: str, *, backup: bool = False) -> DeleteResult:
         """Delete a path, recursively removing anything nested under it.
 
         This method is optional. Backends that do not implement it inherit this
@@ -647,6 +710,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         Args:
             file_path: Absolute path to delete (a file, or a directory/prefix to
                 remove recursively). Must start with '/'.
+            backup: When True, backends that support it may create a backup
+                before deletion (typically for single files).
 
         Returns:
             `DeleteResult` with the deleted path on success, or an error if
@@ -657,9 +722,34 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """
         raise NotImplementedError
 
-    async def adelete(self, file_path: str) -> DeleteResult:
+    async def adelete(self, file_path: str, *, backup: bool = False) -> DeleteResult:
         """Async version of `delete`."""
-        return await asyncio.to_thread(self.delete, file_path)
+        return await asyncio.to_thread(self.delete, file_path, backup=backup)
+
+    async def aedit_batched(
+        self,
+        file_path: str,
+        operations: list[BatchedEditOperation],
+        *,
+        backup: bool = False,
+    ) -> BatchedEditResult:
+        """Apply multiple line-oriented edits in one atomic read/modify/write.
+
+        Optional. Default raises `NotImplementedError`. Local filesystem
+        backends implement this; State/Store/Sandbox typically do not.
+
+        Args:
+            file_path: Absolute path to the file to edit.
+            operations: Line edits to apply.
+            backup: When True, backends that support it may create a backup.
+
+        Returns:
+            `BatchedEditResult` with apply counts or an error.
+
+        Raises:
+            NotImplementedError: If the backend does not implement batched edits.
+        """
+        raise NotImplementedError
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.

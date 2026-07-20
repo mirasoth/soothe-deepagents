@@ -665,7 +665,13 @@ def _glob_timeout_message(timeout_seconds: float) -> str:
     Args:
         timeout_seconds: Active timeout deadline in seconds.
     """
-    return f"Error: glob timed out after {timeout_seconds}s. Try a more specific pattern or a narrower path."
+    return (
+        f"Error: glob timed out after {timeout_seconds}s. "
+        "Try a more specific pattern, set path to a narrower directory, "
+        "or switch strategy: use grep(pattern=..., glob='...') for "
+        "content-based discovery, or ls on known directories before "
+        "read_file. Avoid repeating broad ** globs."
+    )
 
 
 def _discard_task_result(task: asyncio.Future[Any]) -> None:
@@ -1053,10 +1059,19 @@ GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
 Supports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character).
 Returns a list of absolute file paths that match the pattern.
 
+Prefer narrow patterns scoped to a directory over repo-wide `**` scans.
+Set `path` to a subdirectory when the search target is known.
+
 Examples:
-- `**/*.py` - Find all Python files
-- `*.txt` - Find all text files in the backend's default root
-- `/subdir/**/*.md` - Find all markdown files under /subdir"""
+- `**/*.py` - Find all Python files (may be slow on large trees)
+- `packages/api/**/*.test.ts` - Tests under one package
+- `*.txt` - Text files in the backend's default root
+- `/subdir/**/*.md` - Markdown files under /subdir
+
+If glob fails, times out, or returns empty: narrow the path, use
+`grep(pattern=..., glob='*.ts')` for content-based discovery, or `ls` on
+known directories before `read_file` on specific targets. Avoid repeating
+broad `**` globs."""
 
 # Carries its own leading newline so the empty-string substitution below drops
 # the whole line cleanly, with no blank line left behind.

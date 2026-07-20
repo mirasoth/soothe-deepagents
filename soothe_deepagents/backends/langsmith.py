@@ -94,7 +94,7 @@ class LangSmithSandbox(BaseSandbox):
             truncated=False,
         )
 
-    def write(self, file_path: str, content: str) -> WriteResult:
+    def write(self, file_path: str, content: str, *, backup: bool = False) -> WriteResult:  # noqa: ARG002
         """Write content using the LangSmith SDK to avoid ARG_MAX.
 
         `BaseSandbox.write()` sends the full content in a shell command, which
@@ -106,6 +106,7 @@ class LangSmithSandbox(BaseSandbox):
         Args:
             file_path: Destination path inside the sandbox.
             content: Text content to write.
+            backup: Accepted for protocol compatibility; not implemented here.
 
         Returns:
             `WriteResult` with the written path on success, or an error message.
