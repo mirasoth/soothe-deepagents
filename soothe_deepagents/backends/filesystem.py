@@ -500,6 +500,11 @@ class FilesystemBackend(BackendProtocol):
         except (OSError, UnicodeDecodeError) as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")
 
+    @property
+    def edit_locks(self) -> FileEditLockRegistry:
+        """Per-path edit lock registry shared with product façades (e.g. nano line tools)."""
+        return self._edit_locks
+
     def _resolved_backup_dir(self) -> Path:
         """Return the absolute backup directory for this backend."""
         if self._backup_dir.is_absolute():

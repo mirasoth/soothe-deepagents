@@ -278,6 +278,18 @@ class SkillMetadata(TypedDict):
     It is recommended to keep key names unique to avoid conflicts.
     """
 
+    paths: NotRequired[list[str] | None]
+    """Optional path-glob activation patterns (product progressive loading)."""
+
+    when_to_use: NotRequired[str | None]
+    """Optional multi-line guidance for when to activate the skill."""
+
+    core: NotRequired[bool | None]
+    """Optional core-tier flag for progressive skill budgets."""
+
+    tags: NotRequired[str | None]
+    """Optional free-form tags string from frontmatter."""
+
     allowed_tools: list[str]
     """Tool names the skill recommends using.
 
@@ -369,7 +381,37 @@ def _parse_allowed_tools(raw_tools: object, skill_path: str) -> list[str]:
     return []
 
 
-def _parse_skill_metadata(
+def _optional_product_skill_fields(
+    frontmatter_data: dict,
+) -> tuple[list[str] | None, str | None, bool | None, str | None]:
+    """Extract optional product fields from skill frontmatter."""
+    raw_paths = frontmatter_data.get("paths")
+    paths: list[str] | None = None
+    if isinstance(raw_paths, list):
+        paths = [str(item).strip() for item in raw_paths if str(item).strip()]
+    elif isinstance(raw_paths, str) and raw_paths.strip():
+        paths = [raw_paths.strip()]
+
+    raw_when = frontmatter_data.get("when_to_use")
+    when_to_use = str(raw_when).strip() if raw_when is not None and str(raw_when).strip() else None
+
+    raw_core = frontmatter_data.get("core")
+    core: bool | None = None
+    if isinstance(raw_core, bool):
+        core = raw_core
+    elif isinstance(raw_core, str):
+        token = raw_core.strip().lower()
+        if token in ("true", "yes", "1"):
+            core = True
+        elif token in ("false", "no", "0"):
+            core = False
+
+    raw_tags = frontmatter_data.get("tags")
+    tags = str(raw_tags).strip() if raw_tags is not None and str(raw_tags).strip() else None
+    return paths, when_to_use, core, tags
+
+
+def _parse_skill_metadata(  # noqa: C901
     content: str,
     skill_path: str,
     directory_name: str,
@@ -460,7 +502,9 @@ def _parse_skill_metadata(
         )
         compatibility_str = compatibility_str[:MAX_SKILL_COMPATIBILITY_LENGTH]
 
-    return SkillMetadata(
+    paths, when_to_use, core, tags = _optional_product_skill_fields(frontmatter_data)
+
+    result = SkillMetadata(
         name=str(name),
         description=description_str,
         path=skill_path,
@@ -469,6 +513,16 @@ def _parse_skill_metadata(
         compatibility=compatibility_str,
         allowed_tools=allowed_tools,
     )
+    # Optional product fields — only present when set (keeps Agent Skills payloads lean).
+    if paths is not None:
+        result["paths"] = paths
+    if when_to_use is not None:
+        result["when_to_use"] = when_to_use
+    if core is not None:
+        result["core"] = core
+    if tags is not None:
+        result["tags"] = tags
+    return result
 
 
 def _validate_metadata(
@@ -1118,4 +1172,51 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         return await handler(modified_request)
 
 
-__all__ = ["SkillMetadata", "SkillsMiddleware"]
+def strip_skill_frontmatter(content: str) -> str:
+    """Remove YAML frontmatter from SKILL.md content, returning the body."""
+    frontmatter_pattern = r"^---\s*\n(.*?)\n---\s*\n"
+    match = re.match(frontmatter_pattern, content, re.DOTALL)
+    if match:
+        return content[match.end() :]
+    return content
+
+
+def parse_skill_metadata(
+    content: str,
+    skill_path: str,
+    directory_name: str,
+) -> SkillMetadata | None:
+    """Public alias for skill frontmatter parsing."""
+    return _parse_skill_metadata(content, skill_path, directory_name)
+
+
+def list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetadata]:
+    """Public alias for listing skills under a backend source path."""
+    return _list_skills(backend, source_path)
+
+
+def list_skills_with_errors(backend: BackendProtocol, source_path: str) -> tuple[list[SkillMetadata], str | None]:
+    """Public alias for listing skills with a source-level error string."""
+    return _list_skills_with_errors(backend, source_path)
+
+
+async def alist_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetadata]:
+    """Async public alias for listing skills under a backend source path."""
+    return await _alist_skills(backend, source_path)
+
+
+async def alist_skills_with_errors(backend: BackendProtocol, source_path: str) -> tuple[list[SkillMetadata], str | None]:
+    """Async public alias for listing skills with a source-level error string."""
+    return await _alist_skills_with_errors(backend, source_path)
+
+
+__all__ = [
+    "SkillMetadata",
+    "SkillsMiddleware",
+    "alist_skills",
+    "alist_skills_with_errors",
+    "list_skills",
+    "list_skills_with_errors",
+    "parse_skill_metadata",
+    "strip_skill_frontmatter",
+]

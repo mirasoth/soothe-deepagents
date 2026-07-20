@@ -45,6 +45,8 @@ from soothe_deepagents.middleware.skills import (
     _skill_metadata_from_response,
     _validate_metadata,
     _validate_skill_name,
+    parse_skill_metadata,
+    strip_skill_frontmatter,
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
@@ -2204,3 +2206,25 @@ def test_modify_request_reuses_cached_skills_section() -> None:
     middleware.modify_request(request)
 
     assert call_count == 1
+
+
+def test_parse_skill_metadata_optional_product_fields() -> None:
+    content = """---
+name: product-skill
+description: Product skill
+paths:
+  - "*.py"
+when_to_use: |
+  Use for Python.
+core: true
+tags: python, tooling
+---
+# Body
+"""
+    result = parse_skill_metadata(content, "/skills/product-skill/SKILL.md", "product-skill")
+    assert result is not None
+    assert result["paths"] == ["*.py"]
+    assert "Python" in (result.get("when_to_use") or "")
+    assert result.get("core") is True
+    assert result.get("tags") == "python, tooling"
+    assert strip_skill_frontmatter(content).startswith("# Body")

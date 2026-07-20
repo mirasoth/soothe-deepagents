@@ -81,7 +81,16 @@ from soothe_deepagents.middleware.rubric import (
     RubricResult,
     RubricState,
 )
-from soothe_deepagents.middleware.skills import SkillsMiddleware
+from soothe_deepagents.middleware.skills import (
+    SkillMetadata,
+    SkillsMiddleware,
+    alist_skills,
+    alist_skills_with_errors,
+    list_skills,
+    list_skills_with_errors,
+    parse_skill_metadata,
+    strip_skill_frontmatter,
+)
 from soothe_deepagents.middleware.subagents import (
     CompiledSubAgent,
     SubAgent,
@@ -121,6 +130,7 @@ __all__ = [
     "RubricMiddleware",
     "RubricResult",
     "RubricState",
+    "SkillMetadata",
     "SkillsMiddleware",
     "SubAgent",
     "SubAgentMiddleware",
@@ -128,9 +138,15 @@ __all__ = [
     "SummarizationToolMiddleware",
     "ToolOutputCapMiddleware",
     "ToolTimeoutMiddleware",
+    "alist_skills",
+    "alist_skills_with_errors",
     "calc_rate_limit_backoff",
     "create_summarization_tool_middleware",
     "effective_llm_call_timeout",
+    "list_skills",
+    "list_skills_with_errors",
+    "parse_skill_metadata",
     "resolve_llm_budget_key",
     "run_llm_call_with_policy",
+    "strip_skill_frontmatter",
 ]
