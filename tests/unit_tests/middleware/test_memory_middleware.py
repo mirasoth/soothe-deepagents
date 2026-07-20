@@ -810,7 +810,8 @@ def test_create_deep_agent_with_memory_default_backend() -> None:
     # Prepare files dict with FileData format (for StateBackend)
     memory_files = {
         "/user/.soothe_deepagents/AGENTS.md": {
-            "content": memory_content.split("\n"),
+            "content": memory_content,
+            "encoding": "utf-8",
             "created_at": timestamp,
             "modified_at": timestamp,
         }

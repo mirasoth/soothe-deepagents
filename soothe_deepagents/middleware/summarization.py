@@ -82,7 +82,6 @@ from langchain.agents.middleware.summarization import (
     TokenCounter,
 )
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
-from langchain.tools import ToolRuntime
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolCall, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
@@ -91,9 +90,7 @@ from langgraph.types import Command
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
-from soothe_deepagents._api.deprecation import warn_deprecated
 from soothe_deepagents.backends import CompositeBackend
-from soothe_deepagents.backends.protocol import _resolve_backend
 from soothe_deepagents.middleware._overflow_clip import _aclip_overflow_tail, _clip_overflow_tail
 from soothe_deepagents.middleware._utils import append_to_system_message
 
@@ -121,11 +118,11 @@ if TYPE_CHECKING:
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain.chat_models import BaseChatModel
-    from langchain_core.runnables.config import RunnableConfig
+    from langchain.tools import ToolRuntime
     from langchain_core.tools import BaseTool
     from langgraph.runtime import Runtime
 
-    from soothe_deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol, FileUploadResponse
+    from soothe_deepagents.backends.protocol import BackendProtocol, FileUploadResponse
 
 logger = logging.getLogger(__name__)
 
@@ -521,7 +518,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         self,
         model: str | BaseChatModel,
         *,
-        backend: BACKEND_TYPES,
+        backend: BackendProtocol,
         trigger: ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None = None,
         keep: ContextSize = ("messages", _DEFAULT_MESSAGES_TO_KEEP),
         token_counter: TokenCounter = count_tokens_approximately,
@@ -534,7 +531,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
         Args:
             model: The language model to use for generating summaries.
-            backend: Backend instance or factory for persisting conversation history.
+            backend: Backend instance for persisting conversation history.
             trigger: Threshold(s) that trigger summarization. A tuple is a single threshold,
                 a dict combines thresholds with AND semantics, and a list combines items
                 with OR semantics.
@@ -574,20 +571,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             )
             ```
         """
-        _deprecated_history_prefix = deprecated_kwargs.pop("history_path_prefix", None)
-        if _deprecated_history_prefix is not None:
-            warn_deprecated(
-                since="0.5.0",
-                removal="0.7.0",
-                message=(
-                    "The argument `history_path_prefix` is deprecated and "
-                    "will be removed in soothe_deepagents==0.7.0. Use "
-                    "`CompositeBackend(artifacts_root='/my/root', ...)` "
-                    "instead."
-                ),
-                package="soothe_deepagents",
-            )
-
         # Initialize langchain helper for core summarization logic
         self._lc_helper = LCSummarizationMiddleware(
             model=model,
@@ -612,9 +595,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         _root = artifacts_root.rstrip("/")
         self._history_path_prefix = f"{_root}/conversation_history"
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
-
-        if _deprecated_history_prefix is not None:
-            self._history_path_prefix = _deprecated_history_prefix
         self._media_prefix = f"{self._history_path_prefix}/media"
 
         # Parse truncate_args_settings
@@ -673,31 +653,16 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         state: AgentState[Any],
         runtime: Runtime,
     ) -> BackendProtocol:
-        """Resolve backend from instance or factory.
+        """Return the configured backend instance.
 
         Args:
-            state: Current agent state.
-            runtime: Runtime context for factory functions.
+            state: Current agent state (unused).
+            runtime: Runtime context (unused).
 
         Returns:
-            Resolved backend instance.
+            Configured backend instance.
         """
-        if callable(self._backend):
-            # Because we're using `before_model`, which doesn't receive `config` as a
-            # parameter, we access it via `runtime.config` instead.
-            # Cast is safe: empty dict `{}` is a valid `RunnableConfig` (all fields are
-            # optional in TypedDict).
-            config = cast("RunnableConfig", getattr(runtime, "config", {}))
-
-            tool_runtime = ToolRuntime(
-                state=state,
-                context=runtime.context,
-                stream_writer=runtime.stream_writer,
-                store=runtime.store,
-                config=config,
-                tool_call_id=None,
-            )
-            return _resolve_backend(self._backend, tool_runtime)
+        _ = state, runtime
         return self._backend
 
     def _get_thread_id(self) -> str:
@@ -1653,7 +1618,7 @@ This is the name external callers should import and reference.
 
 def create_summarization_middleware(
     model: BaseChatModel,
-    backend: BACKEND_TYPES,
+    backend: BackendProtocol,
     *,
     summary_prompt: str = DEEPAGENTS_DEFAULT_SUMMARY_PROMPT,
     trim_tokens_to_summarize: int | None = None,
@@ -1730,7 +1695,7 @@ def create_summarization_middleware(
 
 def create_summarization_tool_middleware(
     model: str | BaseChatModel,
-    backend: BACKEND_TYPES,
+    backend: BackendProtocol,
     *,
     system_prompt: str | None = SUMMARIZATION_SYSTEM_PROMPT,
 ) -> SummarizationToolMiddleware:
@@ -1884,18 +1849,16 @@ class SummarizationToolMiddleware(AgentMiddleware):
         self.tools: list[BaseTool] = [self._create_compact_tool()]
 
     def _resolve_backend(self, runtime: ToolRuntime) -> BackendProtocol:
-        """Resolve backend from instance or factory using a `ToolRuntime`.
+        """Return the configured backend instance.
 
         Args:
-            runtime: The tool runtime context.
+            runtime: The tool runtime context (unused).
 
         Returns:
-            Resolved backend instance.
+            Configured backend instance.
         """
-        backend = self._summarization._backend
-        if callable(backend):
-            return _resolve_backend(backend, runtime)
-        return backend
+        _ = runtime
+        return self._summarization._backend
 
     def _create_compact_tool(self) -> BaseTool:
         """Create the `compact_conversation` structured tool.

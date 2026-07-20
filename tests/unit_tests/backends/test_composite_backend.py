@@ -369,6 +369,7 @@ def test_composite_glob_merge_propagates_backend_error(monkeypatch: pytest.Monke
 
 def test_composite_glob_default_error_short_circuits_routes() -> None:
     """A root glob default error should return before consulting routed backends."""
+    mem_store = InMemoryStore()
 
     class ErrorDefaultBackend(StoreBackend):
         def glob(self, pattern: str, path: str | None = None) -> GlobResult:
@@ -376,7 +377,7 @@ def test_composite_glob_default_error_short_circuits_routes() -> None:
 
     class TrackingRouteBackend(StoreBackend):
         def __init__(self) -> None:
-            super().__init__()
+            super().__init__(store=mem_store, namespace=lambda _rt: ("store",))
             self.called = False
 
         def glob(self, pattern: str, path: str | None = None) -> GlobResult:
@@ -384,7 +385,10 @@ def test_composite_glob_default_error_short_circuits_routes() -> None:
             return GlobResult(matches=[])
 
     routed_backend = TrackingRouteBackend()
-    comp = CompositeBackend(default=ErrorDefaultBackend(), routes={"/store/": routed_backend})
+    comp = CompositeBackend(
+        default=ErrorDefaultBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/store/": routed_backend},
+    )
 
     result = comp.glob("*", path="/")
 
@@ -596,8 +600,7 @@ def test_composite_backend_intercept_large_tool_result(file_format):
     # Verify the file was written to the default store backend
     stored_item = mem_store.get(("default",), "/large_tool_results/test_789")
     assert stored_item is not None
-    expected = [large_content] if file_format == "v1" else large_content
-    assert stored_item.value["content"] == expected
+    assert stored_item.value["content"] == large_content
 
 
 @pytest.mark.parametrize("file_format", ["v1", "v2"])
@@ -624,8 +627,7 @@ def test_composite_backend_intercept_large_tool_result_routed_to_store(file_form
 
     stored_item = mem_store.get(("filesystem",), "/test_routed_123")
     assert stored_item is not None
-    expected = [large_content] if file_format == "v1" else large_content
-    assert stored_item.value["content"] == expected
+    assert stored_item.value["content"] == large_content
 
 
 # Mock sandbox backend for testing execute functionality
@@ -1202,7 +1204,7 @@ def test_composite_grep_error_in_routed_backend() -> None:
         def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
             return "Invalid regex pattern error"
 
-    error_backend = ErrorBackend()
+    error_backend = ErrorBackend(store=mem_store, namespace=lambda _rt: ("errors",))
     state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
@@ -1221,7 +1223,7 @@ def test_composite_grep_error_in_routed_backend_at_root() -> None:
         def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
             return "Backend error occurred"
 
-    error_backend = ErrorBackend()
+    error_backend = ErrorBackend(store=mem_store, namespace=lambda _rt: ("errors",))
     state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
@@ -1240,7 +1242,7 @@ def test_composite_grep_error_in_default_backend_at_root() -> None:
         def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
             return "Default backend error"
 
-    error_default = ErrorDefaultBackend()
+    error_default = ErrorDefaultBackend(store=mem_store, namespace=lambda _rt: ("default",))
     store_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=error_default, routes={"/store/": store_backend})

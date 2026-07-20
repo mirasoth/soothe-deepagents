@@ -1,8 +1,5 @@
-import warnings
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any, Never
-from unittest.mock import patch
 
 import pytest
 from langchain.tools import ToolRuntime
@@ -11,9 +8,8 @@ from langgraph.runtime import Runtime
 from langgraph.store.base import PutOp
 from langgraph.store.memory import InMemoryStore
 
-from soothe_deepagents._api.deprecation import LangChainDeprecationWarning
 from soothe_deepagents.backends.protocol import EditResult, ReadResult, WriteResult
-from soothe_deepagents.backends.store import BackendContext, StoreBackend, _NamespaceRuntimeCompat, _validate_namespace
+from soothe_deepagents.backends.store import StoreBackend, _validate_namespace
 from soothe_deepagents.middleware.filesystem import FilesystemMiddleware
 
 
@@ -34,7 +30,7 @@ def test_store_backend_crud_and_search():
     msg2 = be.edit("/docs/readme.md", "hello", "hi", replace_all=False)
     assert isinstance(msg2, EditResult) and msg2.error is None and msg2.occurrences == 1
 
-    # ls_info (path prefix filter)
+    # ls (path prefix filter)
     infos = be.ls("/docs/").entries
     assert infos is not None
     assert any(i["path"] == "/docs/readme.md" for i in infos)
@@ -188,8 +184,7 @@ def test_store_backend_intercept_large_tool_result(file_format):
 
     stored_content = mem_store.get(("filesystem",), "/large_tool_results/test_456")
     assert stored_content is not None
-    expected = [large_content] if file_format == "v1" else large_content
-    assert stored_content.value["content"] == expected
+    assert stored_content.value["content"] == large_content
 
 
 @dataclass
@@ -284,23 +279,11 @@ def test_store_backend_namespace_error_handling() -> None:
         be.write("/test.txt", "content")
 
 
-def test_store_backend_namespace_legacy_mode() -> None:
-    """Test that legacy mode still works when no namespace is provided, but emits deprecation warning."""
+def test_store_backend_requires_namespace() -> None:
+    """StoreBackend requires an explicit namespace factory."""
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store)  # No namespace - uses legacy mode
-
-    # Should emit deprecation warning
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        be.write("/legacy.txt", "legacy content")
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
-        assert "namespace" in str(w[0].message)
-
-    # Should be in default namespace (no assistant_id in context config)
-    items = mem_store.search(("filesystem",))
-    assert len(items) == 1
-    assert items[0].key == "/legacy.txt"
+    with pytest.raises(TypeError):
+        StoreBackend(store=mem_store)  # type: ignore[call-arg]
 
 
 def test_store_backend_namespace_with_context() -> None:
@@ -319,104 +302,6 @@ def test_store_backend_namespace_with_context() -> None:
     items = mem_store.search(("threads", "ctx-user"))
     assert len(items) == 1
     assert items[0].key == "/test.txt"
-
-
-# --- Backwards compatibility tests for _NamespaceRuntimeCompat ---
-
-
-def test_compat_wrapper_old_style_runtime_access_warns() -> None:
-    """Old-style factories accessing .runtime get a deprecation warning."""
-    compat = _NamespaceRuntimeCompat(runtime=None)
-
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = compat.runtime
-        assert result is None
-        assert len(w) == 1
-        assert w[0].category is LangChainDeprecationWarning
-        assert ".runtime" in str(w[0].message)
-        assert "0.7.0" in str(w[0].message)
-
-
-def test_compat_wrapper_old_style_state_access_warns() -> None:
-    """Old-style factories accessing .state get a deprecation warning."""
-    compat = _NamespaceRuntimeCompat(runtime=None, state={"messages": []})
-
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = compat.state
-        assert result == {"messages": []}
-        assert len(w) == 1
-        assert w[0].category is LangChainDeprecationWarning
-        assert ".state" in str(w[0].message)
-        assert "0.7.0" in str(w[0].message)
-
-
-def test_compat_wrapper_proxies_runtime_attrs() -> None:
-    """New-style factories can access Runtime attributes directly through the wrapper."""
-
-    @dataclass
-    class Ctx:
-        user_id: str
-
-    rt = Runtime(context=Ctx(user_id="alice"))
-    compat = _NamespaceRuntimeCompat(runtime=rt)
-
-    # New-style access: no warning, proxied to Runtime
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        assert compat.context.user_id == "alice"  # type: ignore[union-attr]
-        assert compat.store is None  # type: ignore[union-attr]
-        # No deprecation warnings for direct Runtime attr access
-        assert len(w) == 0
-
-
-def test_compat_wrapper_old_style_factory_end_to_end() -> None:
-    """An old-style namespace factory using ctx.runtime.context still works."""
-
-    @dataclass
-    class Ctx:
-        user_id: str
-
-    rt = Runtime(context=Ctx(user_id="bob"))
-    compat = _NamespaceRuntimeCompat(runtime=rt)
-
-    # Old-style factory
-    def old_factory(ctx: BackendContext) -> tuple[str, ...]:  # type: ignore[type-arg]
-        return (ctx.runtime.context.user_id, "filesystem")  # type: ignore[union-attr]
-
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = old_factory(compat)  # type: ignore[arg-type]
-        assert result == ("bob", "filesystem")
-        assert len(w) == 1  # one warning from .runtime access
-
-
-def test_compat_wrapper_new_style_factory_end_to_end() -> None:
-    """A new-style namespace factory using rt.context works without warnings."""
-    rt = Runtime(
-        context=None,
-        server_info=SimpleNamespace(user=SimpleNamespace(identity="carol")),  # type: ignore[arg-type]
-    )
-    compat = _NamespaceRuntimeCompat(runtime=rt)
-
-    # New-style factory
-    def new_factory(rt: Runtime) -> tuple[str, ...]:  # type: ignore[type-arg]
-        return (rt.server_info.user.identity, "filesystem")
-
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = new_factory(compat)  # type: ignore[arg-type]
-        assert result == ("carol", "filesystem")
-        assert len(w) == 0  # no warnings
-
-
-def test_compat_wrapper_no_runtime_raises_on_attr_access() -> None:
-    """Accessing Runtime attrs when runtime is None raises AttributeError."""
-    compat = _NamespaceRuntimeCompat(runtime=None)
-
-    with pytest.raises(AttributeError, match="running outside graph execution"):
-        _ = compat.context  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize(
@@ -516,25 +401,6 @@ def test_store_backend_rejects_wildcard_namespace() -> None:
 
     with pytest.raises(ValueError, match="disallowed characters"):
         be.write("/test.txt", "content")
-
-
-def test_store_backend_legacy_path_rejects_malicious_assistant_id() -> None:
-    """Ensure the legacy namespace path validates assistant_id from config metadata.
-
-    A wildcard or otherwise malformed assistant_id must raise ValueError and
-    never reach the store, closing the injection gap in _get_namespace_legacy.
-    """
-    mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store)  # No namespace factory — triggers legacy path
-
-    malicious_ids = ["*", "user*", "a b", "path/to", "$var", "ns[0]", "ns{a}"]
-
-    for bad_id in malicious_ids:
-        fake_cfg = {"metadata": {"assistant_id": bad_id}}
-        with patch("soothe_deepagents.backends.store.get_config", return_value=fake_cfg), warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            with pytest.raises(ValueError, match="disallowed characters"):
-                be.write("/test.txt", "content")
 
 
 def test_store_backend_delete() -> None:

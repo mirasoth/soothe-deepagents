@@ -2,6 +2,23 @@
 
 # Deep Agents Changelog
 
+## [0.8.0] - 2026-07-21
+
+### Changed
+- Middleware backends require a concrete `BackendProtocol` instance (callable backend factories removed)
+- `FilesystemBackend` / `LocalShellBackend` default `virtual_mode=True`
+- `StoreBackend` requires an explicit `namespace=`
+- Constant-namespace `StoreBackend` works with an explicit `store=` outside a LangGraph runtime
+
+### Removed
+- Deprecated backend factory API (`BackendFactory`, `BACKEND_TYPES`, factory resolution)
+- `files_update` on `WriteResult` / `EditResult`
+- Legacy listing/search helpers: `ls_info` / `als_info` / `glob_info` / `grep_raw` (and async variants)
+- `StateBackend(runtime=...)`, `BackendContext`, and store backends without `namespace=`
+- `history_path_prefix=` summarization option
+- `list[str]` file content and string coercion on `read()` / `delete()` returns
+- Soft-default `virtual_mode=None` deprecation warning path
+
 ## [0.7.24] - 2026-07-20
 
 ### Added

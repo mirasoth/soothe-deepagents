@@ -7,7 +7,6 @@ from langchain_core.runnables import RunnableConfig
 from langgraph._internal._constants import CONFIG_KEY_READ, CONFIG_KEY_SEND
 from langgraph.config import get_config
 
-from soothe_deepagents._api.deprecation import warn_deprecated
 from soothe_deepagents.backends.protocol import (
     BackendProtocol,
     DeleteResult,
@@ -26,7 +25,6 @@ from soothe_deepagents.backends.protocol import (
 from soothe_deepagents.backends.utils import (
     _get_backend_read_file_type,
     _glob_search_files,
-    _to_legacy_file_data,
     create_file_data,
     file_data_to_string,
     grep_matches_from_files,
@@ -50,32 +48,17 @@ class StateBackend(BackendProtocol):
 
     def __init__(
         self,
-        runtime: object = None,
         *,
         file_format: FileFormat = "v2",
     ) -> None:
         r"""Initialize StateBackend.
 
         Args:
-            runtime: Deprecated - accepted for backward compatibility but
-                ignored.  State is now read/written via `get_config()`.
             file_format: Storage format version. `"v1"` stores
                 content as `list[str]` (lines split on `\\n`) without an
                 `encoding` field.  `"v2"` (default) stores content as a
                 plain `str` with an `encoding` field.
         """
-        if runtime is not None:
-            warn_deprecated(
-                since="0.5.0",
-                removal="0.7.0",
-                message=(
-                    "Passing `runtime` to `StateBackend` is deprecated and "
-                    "will be removed in soothe_deepagents==0.7.0. `StateBackend` now "
-                    "reads and writes state via `get_config()`. Use "
-                    "`StateBackend()` instead."
-                ),
-                package="soothe_deepagents",
-            )
         self._file_format = file_format
 
     # ------------------------------------------------------------------
@@ -149,10 +132,20 @@ class StateBackend(BackendProtocol):
     def _prepare_for_storage(self, file_data: FileData) -> dict[str, Any]:
         """Convert FileData to the format used for state storage.
 
-        When `file_format="v1"`, returns the legacy format.
+        Content is always stored as a plain `str`. The `file_format` flag only
+        controls whether an `encoding` field is written (`v2`) or omitted (`v1`).
         """
+        content = file_data["content"]
+        if isinstance(content, list):
+            msg = "FileData content must be a plain str; list[str] is no longer supported"
+            raise TypeError(msg)
         if self._file_format == "v1":
-            return _to_legacy_file_data(file_data)
+            result: dict[str, Any] = {"content": content}
+            if "created_at" in file_data:
+                result["created_at"] = file_data["created_at"]
+            if "modified_at" in file_data:
+                result["modified_at"] = file_data["modified_at"]
+            return result
         return {**file_data}
 
     def ls(self, path: str) -> LsResult:

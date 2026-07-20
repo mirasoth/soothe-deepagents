@@ -177,7 +177,13 @@ class CompositeBackend(BackendProtocol):
 
     Examples:
         ```python
-        composite = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend(), "/cache/": StoreBackend()})
+        composite = CompositeBackend(
+            default=StateBackend(),
+            routes={
+                "/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",)),
+                "/cache/": StoreBackend(namespace=lambda _rt: ("filesystem",)),
+            },
+        )
 
         composite.write("/temp.txt", "data")
         composite.write("/memories/note.txt", "data")

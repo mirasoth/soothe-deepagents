@@ -15,7 +15,6 @@ from typing import Any, Final, Literal, overload
 
 import wcmatch.glob as wcglob
 
-from soothe_deepagents._api.deprecation import warn_deprecated
 from soothe_deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, GrepResult, ReadResult
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
@@ -165,29 +164,19 @@ def compile_recursive_glob(pattern: str) -> Callable[[str], bool]:
 def _normalize_content(file_data: FileData) -> str:
     """Normalize file_data content to a plain string.
 
-    This is the single backwards-compatibility conversion point for the
-    legacy `list[str]` file format.  New code stores `content` as a
-    plain `str`; old data may still contain a list of lines.
-
     Args:
         file_data: `FileData` dict with `content` key.
 
     Returns:
         Content as a single string.
+
+    Raises:
+        TypeError: If content is not a plain string.
     """
     content = file_data["content"]
     if isinstance(content, list):
-        warn_deprecated(
-            since="0.5.0",
-            removal="0.7.0",
-            message=(
-                "`FileData` with `list[str]` content is deprecated and will "
-                "be removed in soothe_deepagents==0.7.0. Content should be stored "
-                "as a plain `str`."
-            ),
-            package="soothe_deepagents",
-        )
-        return "\n".join(content)
+        msg = f"FileData content must be a plain str; list[str] content is no longer supported. Got list of length {len(content)}."
+        raise TypeError(msg)
     return content
 
 

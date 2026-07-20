@@ -18,10 +18,6 @@ def assert_all_deepagent_qualities(agent):
     assert "task" in agent.nodes["tools"].bound._tools_by_name
 
 
-###########################
-# Mock tools and middleware
-###########################
-
 SAMPLE_MODEL = "claude-sonnet-4-6"
 
 
@@ -31,7 +27,7 @@ def get_premier_league_standings(runtime: ToolRuntime):
     return Command(
         update={
             "messages": [ToolMessage(content=long_tool_msg, tool_call_id=runtime.tool_call_id)],
-            "files": {"/test.txt": {"content": ["Goodbye world"], "encoding": "utf-8", "created_at": "2021-01-01", "modified_at": "2021-01-01"}},
+            "files": {"/test.txt": {"content": "Goodbye world", "encoding": "utf-8", "created_at": "2021-01-01", "modified_at": "2021-01-01"}},
             "research": "extra_value",
         }
     )
@@ -40,11 +36,7 @@ def get_premier_league_standings(runtime: ToolRuntime):
 @tool(description="Use this tool to get la liga standings")
 def get_la_liga_standings(runtime: ToolRuntime):
     long_tool_msg = "This is a long tool message that should be evicted to the filesystem.\n" * 300
-    return Command(
-        update={
-            "messages": [ToolMessage(content=long_tool_msg, tool_call_id=runtime.tool_call_id)],
-        }
-    )
+    return Command(update={"messages": [ToolMessage(content=long_tool_msg, tool_call_id=runtime.tool_call_id)]})
 
 
 @tool(description="Use this tool to get a comprehensive report on the NBA standings")

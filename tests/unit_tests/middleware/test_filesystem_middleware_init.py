@@ -123,7 +123,7 @@ class TestFilesystemMiddlewareArtifactsPrefixMode:
             model=ChatAnthropic(model="claude-sonnet-4-6"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))}),
                     custom_tool_descriptions={
                         "ls": "Charmander",
                         "read_file": "Bulbasaur",

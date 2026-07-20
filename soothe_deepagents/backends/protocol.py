@@ -9,21 +9,17 @@ import abc
 import asyncio
 import inspect
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Final, Literal, NotRequired, TypeAlias
+from typing import Final, Literal, NotRequired
 
-from langchain.tools import ToolRuntime
 from typing_extensions import TypedDict
-
-from soothe_deepagents._api.deprecation import deprecated, warn_deprecated
 
 FileFormat = Literal["v1", "v2"]
 r"""File storage format version.
 
 - `'v1'`: Legacy format — `content` stored as `list[str]` (lines split
-    on `\\n`), no `encoding` field.
+    on `\\n`), no `encoding` field. New writes should use `'v2'`.
 - `'v2'`: Current format — `content` stored as a plain `str` (UTF-8 text
     or base64-encoded binary), with an `encoding` field (`"utf-8"` or
     `"base64"`).
@@ -193,38 +189,7 @@ class ReadResult:
     file_data: FileData | None = None
 
 
-class _Unset:
-    """Sentinel type for detecting explicit parameter usage."""
-
-
-Unset = _Unset()
-
-
-def _normalize_files_update(
-    files_update: dict[str, Any] | None | _Unset,
-) -> dict[str, Any] | None:
-    """Normalize file updates."""
-    if isinstance(files_update, _Unset):
-        return None
-
-    # `stacklevel=3` lifts attribution past `__init__` and this helper to the
-    # user's `WriteResult(...)` / `EditResult(...)` call site.
-    # TODO(mdrxy): remove `files_update` fields in 0.7.0. https://github.com/langchain-ai/soothe_deepagents/issues/3220  # noqa: FIX002
-    warn_deprecated(
-        since="0.5.0",
-        removal="0.7.0",
-        message=(
-            "`files_update` was deprecated in soothe_deepagents 0.5.0 and will be "
-            "removed in soothe_deepagents==0.7.0. State updates are now handled "
-            "internally by the backend."
-        ),
-        package="soothe_deepagents",
-        stacklevel=3,
-    )
-    return files_update
-
-
-@dataclass(init=False)
+@dataclass
 class WriteResult:
     """Result from backend `write` operations.
 
@@ -238,26 +203,12 @@ class WriteResult:
         >>> WriteResult(error="File exists")
     """
 
-    error: str | None
-    path: str | None
-    files_update: dict[str, Any] | None
-    backup_path: str | None
-
-    def __init__(
-        self,
-        error: str | None = None,
-        path: str | None = None,
-        files_update: dict[str, Any] | None | _Unset = Unset,
-        backup_path: str | None = None,
-    ) -> None:
-        """Initialize WriteResult."""
-        self.error = error
-        self.path = path
-        self.files_update = _normalize_files_update(files_update)
-        self.backup_path = backup_path
+    error: str | None = None
+    path: str | None = None
+    backup_path: str | None = None
 
 
-@dataclass(init=False)
+@dataclass
 class EditResult:
     """Result from backend `edit` operations.
 
@@ -272,26 +223,10 @@ class EditResult:
         >>> EditResult(error="File not found")
     """
 
-    error: str | None
-    path: str | None
-    files_update: dict[str, Any] | None
-    occurrences: int | None
-    backup_path: str | None
-
-    def __init__(
-        self,
-        error: str | None = None,
-        path: str | None = None,
-        files_update: dict[str, Any] | None | _Unset = Unset,
-        occurrences: int | None = None,
-        backup_path: str | None = None,
-    ) -> None:
-        """Initialize edit result."""
-        self.error = error
-        self.path = path
-        self.files_update = _normalize_files_update(files_update)
-        self.occurrences = occurrences
-        self.backup_path = backup_path
+    error: str | None = None
+    path: str | None = None
+    occurrences: int | None = None
+    backup_path: str | None = None
 
 
 @dataclass
@@ -423,9 +358,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
     !!! note
 
-        Legacy data may still contain `"content": list[str]` (lines split on
-        `\\n`). Backends accept this for backwards compatibility and emit a
-        `LangChainDeprecationWarning` (a `DeprecationWarning` subclass).
+        File content must be a plain `str` (UTF-8 text or base64-encoded
+        binary) with an `encoding` field.
     """
 
     def ls(self, path: str) -> "LsResult":
@@ -438,18 +372,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             `LsResult` with directory entries or error.
 
         Raises:
-            NotImplementedError: If the backend does not implement `ls` (or
-                the legacy `ls_info`).
+            NotImplementedError: If the backend does not implement `ls`.
         """
-        if type(self).ls_info is not BackendProtocol.ls_info:
-            warn_deprecated(
-                since="0.5.0",
-                removal="0.7.0",
-                message=("`ls_info` is deprecated and will be removed in soothe_deepagents==0.7.0; rename to `ls` instead."),
-                package="soothe_deepagents",
-            )
-            return LsResult(entries=self.ls_info(path))
-
         raise NotImplementedError
 
     async def als(self, path: str) -> "LsResult":
@@ -470,12 +394,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             limit: Maximum number of lines to read.
 
         Returns:
-            String containing file content formatted with line numbers (`cat -n` format),
-                starting at line 1.
-
-                Lines longer than 2000 characters are truncated.
-
-                Returns an error string if the file doesn't exist or can't be read.
+            `ReadResult` with file data or error.
         """
         raise NotImplementedError
 
@@ -530,21 +449,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             `GrepResult` with matches or error.
 
         Raises:
-            NotImplementedError: If the backend does not implement `grep` (or
-                the legacy `grep_raw`).
+            NotImplementedError: If the backend does not implement `grep`.
         """
-        if type(self).grep_raw is not BackendProtocol.grep_raw:
-            warn_deprecated(
-                since="0.5.0",
-                removal="0.7.0",
-                message=("`grep_raw` is deprecated and will be removed in soothe_deepagents==0.7.0; rename to `grep` instead."),
-                package="soothe_deepagents",
-            )
-            result = self.grep_raw(pattern, path, glob)
-            if isinstance(result, str):
-                return GrepResult(error=result)
-            return GrepResult(matches=result)
-
         raise NotImplementedError
 
     async def agrep(
@@ -599,18 +505,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             `GlobResult` with matching files or error.
 
         Raises:
-            NotImplementedError: If the backend does not implement `glob` (or
-                the legacy `glob_info`).
+            NotImplementedError: If the backend does not implement `glob`.
         """
-        if type(self).glob_info is not BackendProtocol.glob_info:
-            warn_deprecated(
-                since="0.5.0",
-                removal="0.7.0",
-                message=("`glob_info` is deprecated and will be removed in soothe_deepagents==0.7.0; rename to `glob` instead."),
-                package="soothe_deepagents",
-            )
-            return GlobResult(matches=self.glob_info(pattern, path or "/"))
-
         raise NotImplementedError
 
     async def aglob(self, pattern: str, path: str | None = None) -> "GlobResult":
@@ -805,129 +701,6 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Async version of download_files."""
         return await asyncio.to_thread(self.download_files, paths)
 
-    # -- deprecated methods --------------------------------------------------
-
-    @deprecated(
-        since="0.5.0",
-        removal="0.7.0",
-        alternative="ls",
-        package="soothe_deepagents",
-    )
-    def ls_info(self, path: str) -> list["FileInfo"]:
-        """List all files in a directory with metadata.
-
-        !!! warning "Deprecated"
-            Use `ls` instead. Will be removed in `soothe_deepagents==0.7.0`.
-        """
-        result = self.ls(path)
-        if result.error is not None:
-            msg = "This behavior is only available via the new `ls` API."
-            raise NotImplementedError(msg)
-        return result.entries or []
-
-    @deprecated(
-        since="0.5.0",
-        removal="0.7.0",
-        alternative="als",
-        package="soothe_deepagents",
-    )
-    async def als_info(self, path: str) -> list["FileInfo"]:
-        """Async version of `ls_info`.
-
-        !!! warning "Deprecated"
-
-            Use `als` instead. Will be removed in `soothe_deepagents==0.7.0`.
-        """
-        result = await self.als(path)
-        if result.error is not None:
-            msg = "This behavior is only available via the new `als` API."
-            raise NotImplementedError(msg)
-        return result.entries or []
-
-    @deprecated(
-        since="0.5.0",
-        removal="0.7.0",
-        alternative="glob",
-        package="soothe_deepagents",
-    )
-    def glob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
-        """Find files matching a glob pattern.
-
-        !!! warning "Deprecated"
-
-            Use `glob` instead. Will be removed in `soothe_deepagents==0.7.0`.
-        """
-        result = self.glob(pattern, path)
-        if result.error is not None:
-            msg = "This behavior is only available via the new `glob` API."
-            raise NotImplementedError(msg)
-        return result.matches or []
-
-    @deprecated(
-        since="0.5.0",
-        removal="0.7.0",
-        alternative="aglob",
-        package="soothe_deepagents",
-    )
-    async def aglob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
-        """Async version of `glob_info`.
-
-        !!! warning "Deprecated"
-
-            Use `aglob` instead. Will be removed in `soothe_deepagents==0.7.0`.
-        """
-        result = await self.aglob(pattern, path)
-        if result.error is not None:
-            msg = "This behavior is only available via the new `aglob` API."
-            raise NotImplementedError(msg)
-        return result.matches or []
-
-    @deprecated(
-        since="0.5.0",
-        removal="0.7.0",
-        alternative="grep",
-        package="soothe_deepagents",
-    )
-    def grep_raw(
-        self,
-        pattern: str,
-        path: str | None = None,
-        glob: str | None = None,
-    ) -> list["GrepMatch"] | str:
-        """Search for a literal text pattern in files.
-
-        !!! warning "Deprecated"
-
-            Use `grep` instead. Will be removed in `soothe_deepagents==0.7.0`.
-        """
-        result = self.grep(pattern, path, glob)
-        if result.error is not None:
-            return result.error
-        return result.matches or []
-
-    @deprecated(
-        since="0.5.0",
-        removal="0.7.0",
-        alternative="agrep",
-        package="soothe_deepagents",
-    )
-    async def agrep_raw(
-        self,
-        pattern: str,
-        path: str | None = None,
-        glob: str | None = None,
-    ) -> list["GrepMatch"] | str:
-        """Async version of `grep_raw`.
-
-        !!! warning "Deprecated"
-
-            Use `agrep` instead. Will be removed in `soothe_deepagents==0.7.0`.
-        """
-        result = await self.agrep(pattern, path, glob)
-        if result.error is not None:
-            return result.error
-        return result.matches or []
-
 
 @dataclass
 class ExecuteResponse:
@@ -1057,8 +830,7 @@ def _supports_delete(backend: BackendProtocol) -> bool:
     `NotImplementedError` default from
     [`BackendProtocol`][soothe_deepagents.backends.protocol.BackendProtocol]. This
     helper lets callers detect support without invoking the method (and
-    triggering the error), mirroring the override check used for the legacy
-    `ls_info`/`grep_raw`/`glob_info` methods.
+    triggering the error).
 
     Args:
         backend: The backend instance to check.
@@ -1067,16 +839,3 @@ def _supports_delete(backend: BackendProtocol) -> bool:
         True if the backend overrides `delete`, False otherwise.
     """
     return type(backend).delete is not BackendProtocol.delete
-
-
-BackendFactory: TypeAlias = Callable[[ToolRuntime[Any, Any]], BackendProtocol]
-BACKEND_TYPES: TypeAlias = BackendProtocol | BackendFactory
-
-
-def _resolve_backend(backend: BACKEND_TYPES, runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
-    """Resolve a backend instance or deprecated backend factory."""
-    if isinstance(backend, BackendProtocol):
-        return backend
-    # Use the nominal backend ABC for narrowing instead of `callable()` because
-    # `ty` does not narrow callable unions to the factory return type.
-    return backend(runtime)

@@ -4,8 +4,6 @@ At the moment these tests are written against the state backend, but we will nee
 to extend them to other backends as well.
 """
 
-from functools import partial
-
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
@@ -13,6 +11,10 @@ from langgraph.checkpoint.memory import InMemorySaver
 from soothe_deepagents.backends.state import StateBackend
 from soothe_deepagents.graph import create_deep_agent
 from tests.unit_tests.chat_model import GenericFakeChatModel
+
+
+def _state_backend(file_format: str) -> StateBackend:
+    return StateBackend(file_format=file_format)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("file_format", ["v1", "v2"])
@@ -56,7 +58,7 @@ def test_parallel_write_file_calls_trigger_list_reducer(file_format: str) -> Non
     agent = create_deep_agent(
         model=fake_model,
         checkpointer=InMemorySaver(),
-        backend=partial(StateBackend, file_format=file_format),
+        backend=_state_backend(file_format),
     )
 
     # Invoke the agent, which will trigger the parallel tool calls
@@ -69,14 +71,12 @@ def test_parallel_write_file_calls_trigger_list_reducer(file_format: str) -> Non
     assert "/test1.txt" in result["files"], "File /test1.txt should exist in the final state"
     assert "/test2.txt" in result["files"], "File /test2.txt should exist in the final state"
 
-    # Verify the content of the files
-    expected_hello = ["hello"] if file_format == "v1" else "hello"
-    expected_world = ["world"] if file_format == "v1" else "world"
-    assert result["files"]["/test1.txt"]["content"] == expected_hello
-    assert result["files"]["/test2.txt"]["content"] == expected_world
+    # Verify the content of the files (both v1 and v2 store plain str)
+    assert result["files"]["/test1.txt"]["content"] == "hello"
+    assert result["files"]["/test2.txt"]["content"] == "world"
 
 
-@pytest.mark.parametrize("file_format", ["v1", "v2"])
+@pytest.mark.parametrize("file_format", ["v2"])
 def test_edit_file_single_replacement(file_format: str) -> None:
     """Verify that edit_file correctly replaces a single occurrence of a string."""
     # Fake model will write a file, then edit it
@@ -117,7 +117,7 @@ def test_edit_file_single_replacement(file_format: str) -> None:
     agent = create_deep_agent(
         model=fake_model,
         checkpointer=InMemorySaver(),
-        backend=partial(StateBackend, file_format=file_format),
+        backend=_state_backend(file_format),
     )
 
     result = agent.invoke(
@@ -128,17 +128,12 @@ def test_edit_file_single_replacement(file_format: str) -> None:
     # Verify the file was edited correctly
     assert "/code.py" in result["files"], "File /code.py should exist"
     full_content = result["files"]["/code.py"]["content"]
-    if file_format == "v1":
-        assert isinstance(full_content, list)
-        text = "\n".join(full_content)
-    else:
-        assert isinstance(full_content, str)
-        text = full_content
-    assert "hello universe" in text, f"Content should be updated, got: {text}"
-    assert "hello world" not in text, "Old content should be replaced"
+    assert isinstance(full_content, str)
+    assert "hello universe" in full_content, f"Content should be updated, got: {full_content}"
+    assert "hello world" not in full_content, "Old content should be replaced"
 
 
-@pytest.mark.parametrize("file_format", ["v1", "v2"])
+@pytest.mark.parametrize("file_format", ["v2"])
 def test_edit_file_replace_all(file_format: str) -> None:
     """Verify that edit_file with replace_all replaces all occurrences of a string."""
     # Fake model will write a file with repeated content, then edit all occurrences
@@ -183,7 +178,7 @@ def test_edit_file_replace_all(file_format: str) -> None:
     agent = create_deep_agent(
         model=fake_model,
         checkpointer=InMemorySaver(),
-        backend=partial(StateBackend, file_format=file_format),
+        backend=_state_backend(file_format),
     )
 
     result = agent.invoke(
@@ -194,8 +189,7 @@ def test_edit_file_replace_all(file_format: str) -> None:
     # Verify all occurrences were replaced
     assert "/data.txt" in result["files"], "File /data.txt should exist"
     content = result["files"]["/data.txt"]["content"]
-    expected = ["qux bar qux baz qux"] if file_format == "v1" else "qux bar qux baz qux"
-    assert content == expected, "All occurrences of 'foo' should be replaced with 'qux'"
+    assert content == "qux bar qux baz qux", "All occurrences of 'foo' should be replaced with 'qux'"
 
 
 def test_edit_file_nonexistent_file() -> None:

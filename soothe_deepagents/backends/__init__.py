@@ -13,14 +13,12 @@ from soothe_deepagents.backends.protocol import (
 )
 from soothe_deepagents.backends.state import StateBackend
 from soothe_deepagents.backends.store import (
-    BackendContext,
     NamespaceFactory,
     StoreBackend,
 )
 
 __all__ = [
     "DEFAULT_EXECUTE_TIMEOUT",
-    "BackendContext",
     "BackendProtocol",
     "BatchedEditOperation",
     "BatchedEditResult",

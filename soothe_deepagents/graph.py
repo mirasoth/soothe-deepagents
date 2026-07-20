@@ -43,7 +43,7 @@ from soothe_deepagents._models import resolve_model
 from soothe_deepagents._tools import _apply_tool_description_overrides
 from soothe_deepagents._version import __version__
 from soothe_deepagents.backends import StateBackend
-from soothe_deepagents.backends.protocol import BackendFactory, BackendProtocol
+from soothe_deepagents.backends.protocol import BackendProtocol
 from soothe_deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
 from soothe_deepagents.middleware._state import private_state_field_names
 from soothe_deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
@@ -432,7 +432,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     skills: list[str] | None = None,
     memory: list[str] | None = None,
     permissions: list[FilesystemPermission] | None = None,
-    backend: BackendProtocol | BackendFactory | None = None,
+    backend: BackendProtocol | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     enable_general_purpose_subagent: bool | None = None,
     filesystem_tools: Sequence[FsToolName] | Literal["all"] | None = None,

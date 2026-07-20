@@ -115,7 +115,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
 
-    from soothe_deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+    from soothe_deepagents.backends.protocol import BackendProtocol
 
 from typing import NotRequired, TypedDict
 
@@ -127,9 +127,13 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     ResponseT,
 )
-from langgraph.prebuilt import ToolRuntime
 
-from soothe_deepagents.backends.protocol import FILE_NOT_FOUND, FileDownloadResponse, LsResult, _resolve_backend
+from soothe_deepagents.backends.protocol import (
+    FILE_NOT_FOUND,
+    BackendProtocol,
+    FileDownloadResponse,
+    LsResult,
+)
 from soothe_deepagents.backends.utils import to_posix_path
 from soothe_deepagents.middleware._utils import append_to_system_message
 
@@ -857,7 +861,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
     def __init__(
         self,
         *,
-        backend: BACKEND_TYPES,
+        backend: BackendProtocol,
         sources: Sequence[SkillSource],
         system_prompt: str | None = SKILLS_SYSTEM_PROMPT,
     ) -> None:
@@ -912,32 +916,17 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         self._skills_section_cache_value: str | None = None
 
     def _get_backend(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
-        """Resolve backend from instance or factory.
+        """Return the configured backend instance.
 
         Args:
-            state: Current agent state.
-            runtime: Runtime context for factory functions.
-            config: Runnable config to pass to backend factory.
+            state: Current agent state (unused).
+            runtime: Runtime context (unused).
+            config: Runnable config (unused).
 
         Returns:
-            Resolved backend instance
+            Configured backend instance.
         """
-        if callable(self._backend):
-            # Construct an artificial tool runtime to resolve backend factory
-            tool_runtime = ToolRuntime(
-                state=state,
-                context=runtime.context,
-                stream_writer=runtime.stream_writer,
-                store=runtime.store,
-                config=config,
-                tool_call_id=None,
-            )
-            backend = _resolve_backend(self._backend, tool_runtime)
-            if backend is None:
-                msg = "SkillsMiddleware requires a valid backend instance"
-                raise AssertionError(msg)
-            return backend
-
+        _ = state, runtime, config
         return self._backend
 
     def _format_skills_locations(self) -> str:

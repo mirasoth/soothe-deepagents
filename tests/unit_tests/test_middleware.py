@@ -6,28 +6,13 @@ import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ToolCallRequest
 from langchain.tools import ToolRuntime
-from langchain_core.messages import (
-    AIMessage,
-    HumanMessage,
-    RemoveMessage,
-    SystemMessage,
-    ToolCall,
-    ToolMessage,
-)
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage, ToolCall, ToolMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 
 from soothe_deepagents.backends import CompositeBackend, StateBackend, StoreBackend
-from soothe_deepagents.backends.protocol import (
-    BackendProtocol,
-    ExecuteResponse,
-    GlobResult,
-    GrepResult,
-    LsResult,
-    ReadResult,
-    SandboxBackendProtocol,
-)
+from soothe_deepagents.backends.protocol import BackendProtocol, ExecuteResponse, GlobResult, GrepResult, LsResult, ReadResult, SandboxBackendProtocol
 from soothe_deepagents.backends.utils import (
     TOOL_RESULT_TOKEN_LIMIT,
     TRUNCATION_GUIDANCE,
@@ -38,14 +23,9 @@ from soothe_deepagents.backends.utils import (
     truncate_if_too_long,
     update_file_data,
 )
-from soothe_deepagents.middleware._message_eviction import (
-    _build_evicted_content,
-    _create_content_preview,
-    _extract_text_from_message,
-)
+from soothe_deepagents.middleware._message_eviction import _build_evicted_content, _create_content_preview, _extract_text_from_message
 from soothe_deepagents.middleware.filesystem import (
     EMPTY_CONTENT_WARNING,
-    NUM_CHARS_PER_TOKEN,
     SEARCH_TRUNCATION_NOTE,
     FileData,
     FilesystemMiddleware,
@@ -73,7 +53,7 @@ def _make_backend(files=None):
                 },
             )
     backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
-    return backend, mem_store
+    return (backend, mem_store)
 
 
 def _runtime(tool_call_id=""):
@@ -94,22 +74,14 @@ class TestAddMiddleware:
         assert "grep" in agent_tools
 
     def test_subagent_middleware(self):
-        middleware = [
-            SubAgentMiddleware(
-                backend=StateBackend(),
-                subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-6", "tools": []}],
-            )
-        ]
+        middleware = [SubAgentMiddleware(backend=StateBackend(), subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-6", "tools": []}])]
         agent = create_agent(model="claude-sonnet-4-6", middleware=middleware)
         assert "task" in agent.nodes["tools"].bound._tools_by_name
 
     def test_multiple_middleware(self):
         middleware = [
             FilesystemMiddleware(),
-            SubAgentMiddleware(
-                backend=StateBackend(),
-                subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-6", "tools": []}],
-            ),
+            SubAgentMiddleware(backend=StateBackend(), subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-6", "tools": []}]),
         ]
         agent = create_agent(model="claude-sonnet-4-6", middleware=middleware)
         assert "files" in agent.stream_channels
@@ -128,27 +100,27 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware()
         assert isinstance(middleware.backend, StateBackend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 13  # All tools including execute and new surgical fs tools
+        assert len(middleware.tools) == 13
 
     def test_init_with_composite_backend(self):
-        backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
+        backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))})
         middleware = FilesystemMiddleware(backend=backend)
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 13  # All tools including execute and new surgical fs tools
+        assert len(middleware.tools) == 13
 
     def test_init_custom_system_prompt_default(self):
         middleware = FilesystemMiddleware(system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, StateBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 13  # All tools including execute and new surgical fs tools
+        assert len(middleware.tools) == 13
 
     def test_init_custom_system_prompt_with_composite(self):
-        backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
+        backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))})
         middleware = FilesystemMiddleware(backend=backend, system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 13  # All tools including execute and new surgical fs tools
+        assert len(middleware.tools) == 13
 
     def test_init_custom_tool_descriptions_default(self):
         middleware = FilesystemMiddleware(custom_tool_descriptions={"ls": "Custom ls tool description"})
@@ -158,7 +130,7 @@ class TestFilesystemMiddleware:
         assert ls_tool.description == "Custom ls tool description"
 
     def test_init_custom_tool_descriptions_with_composite(self):
-        backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
+        backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))})
         middleware = FilesystemMiddleware(backend=backend, custom_tool_descriptions={"ls": "Custom ls tool description"})
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt is None
@@ -167,16 +139,8 @@ class TestFilesystemMiddleware:
 
     def test_ls_shortterm(self):
         files = {
-            "/test.txt": FileData(
-                content=["Hello world"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/test2.txt": FileData(
-                content=["Goodbye world"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
+            "/test.txt": FileData(content="Hello world", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/test2.txt": FileData(content="Goodbye world", modified_at="2021-01-01", created_at="2021-01-01"),
         }
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
@@ -195,10 +159,8 @@ class TestFilesystemMiddleware:
         """Repeated root lookups return the same directory metadata."""
         middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
         file_info_tool = next(tool for tool in middleware.tools if tool.name == "file_info")
-
         first = file_info_tool.invoke({"runtime": _runtime("fi1"), "path": "/"})
         second = file_info_tool.invoke({"runtime": _runtime("fi2"), "path": "/"})
-
         assert isinstance(first, ToolMessage)
         assert first.status == "success"
         assert first.content == "Path: /\nType: directory"
@@ -206,19 +168,11 @@ class TestFilesystemMiddleware:
 
     def test_file_info_reports_directory_with_trailing_slash_path(self):
         """Directory lookups remain stable when the requested path ends with '/'."""
-        files = {
-            "/docs/readme.md": FileData(
-                content=["hello"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            )
-        }
+        files = {"/docs/readme.md": FileData(content="hello", modified_at="2021-01-01", created_at="2021-01-01")}
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend, system_prompt="")
         file_info_tool = next(tool for tool in middleware.tools if tool.name == "file_info")
-
         result = file_info_tool.invoke({"runtime": _runtime("fi3"), "path": "/docs/"})
-
         assert isinstance(result, ToolMessage)
         assert result.status == "success"
         assert "Path: /docs" in result.content
@@ -228,9 +182,7 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend({})
         middleware = FilesystemMiddleware(backend=backend, system_prompt="")
         file_info_tool = next(tool for tool in middleware.tools if tool.name == "file_info")
-
         result = file_info_tool.invoke({"runtime": _runtime("fi4"), "path": "/ghost.txt"})
-
         assert isinstance(result, ToolMessage)
         assert result.status == "error"
         assert result.content == "Error: file not found: /ghost.txt"
@@ -245,29 +197,18 @@ class TestFilesystemMiddleware:
             patch.object(backend_obj, "ls", return_value=LsResult(error="listing unavailable")),
         ):
             result = file_info_tool.invoke({"runtime": _runtime("fi5"), "path": "/docs"})
-
         assert isinstance(result, ToolMessage)
         assert result.status == "error"
         assert result.content == "Error: listing unavailable"
 
     def test_file_info_permission_denied_returns_error(self):
-        files = {
-            "/docs/readme.md": FileData(
-                content=["hello"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            )
-        }
+        files = {"/docs/readme.md": FileData(content="hello", modified_at="2021-01-01", created_at="2021-01-01")}
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(
-            backend=backend,
-            system_prompt="",
-            _permissions=[FilesystemPermission(operations=["read"], paths=["/**"], mode="deny")],
+            backend=backend, system_prompt="", _permissions=[FilesystemPermission(operations=["read"], paths=["/**"], mode="deny")]
         )
         file_info_tool = next(tool for tool in middleware.tools if tool.name == "file_info")
-
         result = file_info_tool.invoke({"runtime": _runtime("fi6"), "path": "/docs/readme.md"})
-
         assert isinstance(result, ToolMessage)
         assert result.status == "error"
         assert result.content == "Error: permission denied for read on /docs/readme.md"
@@ -277,164 +218,73 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend({})
         middleware = FilesystemMiddleware(backend=backend, system_prompt="")
         file_info_tool = next(tool for tool in middleware.tools if tool.name == "file_info")
-        malformed_entry = {
-            "path": "/notes.txt",
-            "is_dir": False,
-            "size": "huge",
-            "modified_at": 123,
-        }
+        malformed_entry = {"path": "/notes.txt", "is_dir": False, "size": "huge", "modified_at": 123}
         with patch.object(middleware, "_find_path_info", return_value=(malformed_entry, None)):
             result = file_info_tool.invoke({"runtime": _runtime("fi7"), "path": "/notes.txt"})
-
         assert isinstance(result, ToolMessage)
         assert result.status == "success"
         assert result.content == "Path: /notes.txt\nType: file"
 
     def test_ls_shortterm_with_path(self):
         files = {
-            "/test.txt": FileData(
-                content=["Hello world"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/pokemon/test2.txt": FileData(
-                content=["Goodbye world"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/pokemon/charmander.txt": FileData(
-                content=["Ember"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/pokemon/water/squirtle.txt": FileData(
-                content=["Water"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
+            "/test.txt": FileData(content="Hello world", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/pokemon/test2.txt": FileData(content="Goodbye world", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/pokemon/charmander.txt": FileData(content="Ember", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/pokemon/water/squirtle.txt": FileData(content="Water", modified_at="2021-01-01", created_at="2021-01-01"),
         }
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
-        result_raw = ls_tool.invoke(
-            {
-                "path": "/pokemon/",
-                "runtime": _runtime(),
-            }
-        )
+        result_raw = ls_tool.invoke({"path": "/pokemon/", "runtime": _runtime()})
         result = result_raw.content
-        # ls should only return files directly in /pokemon/, not in subdirectories
         assert "/pokemon/test2.txt" in result
         assert "/pokemon/charmander.txt" in result
-        assert "/pokemon/water/squirtle.txt" not in result  # In subdirectory, should NOT be listed
-        # ls should also list subdirectories with trailing /
+        assert "/pokemon/water/squirtle.txt" not in result
         assert "/pokemon/water/" in result
 
     def test_ls_shortterm_lists_directories(self):
         """Test that ls lists directories with trailing / for traversal."""
         files = {
-            "/test.txt": FileData(
-                content=["Hello world"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/pokemon/charmander.txt": FileData(
-                content=["Ember"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/pokemon/water/squirtle.txt": FileData(
-                content=["Water"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/docs/readme.md": FileData(
-                content=["Documentation"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
+            "/test.txt": FileData(content="Hello world", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/pokemon/charmander.txt": FileData(content="Ember", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/pokemon/water/squirtle.txt": FileData(content="Water", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/docs/readme.md": FileData(content="Documentation", modified_at="2021-01-01", created_at="2021-01-01"),
         }
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
-        result_raw = ls_tool.invoke(
-            {
-                "path": "/",
-                "runtime": _runtime(),
-            }
-        )
+        result_raw = ls_tool.invoke({"path": "/", "runtime": _runtime()})
         result = result_raw.content
-        # ls should list both files and directories at root level
         assert "/test.txt" in result
         assert "/pokemon/" in result
         assert "/docs/" in result
-        # But NOT subdirectory files
         assert "/pokemon/charmander.txt" not in result
         assert "/pokemon/water/squirtle.txt" not in result
 
     def test_glob_search_shortterm_simple_pattern(self):
         files = {
-            "/test.txt": FileData(
-                content=["Hello world"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/test.py": FileData(
-                content=["print('hello')"],
-                modified_at="2021-01-02",
-                created_at="2021-01-01",
-            ),
-            "/pokemon/charmander.py": FileData(
-                content=["Ember"],
-                modified_at="2021-01-03",
-                created_at="2021-01-01",
-            ),
-            "/pokemon/squirtle.txt": FileData(
-                content=["Water"],
-                modified_at="2021-01-04",
-                created_at="2021-01-01",
-            ),
+            "/test.txt": FileData(content="Hello world", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/test.py": FileData(content="print('hello')", modified_at="2021-01-02", created_at="2021-01-01"),
+            "/pokemon/charmander.py": FileData(content="Ember", modified_at="2021-01-03", created_at="2021-01-01"),
+            "/pokemon/squirtle.txt": FileData(content="Water", modified_at="2021-01-04", created_at="2021-01-01"),
         }
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        result_raw = glob_search_tool.invoke(
-            {
-                "pattern": "*.py",
-                "runtime": _runtime(),
-            }
-        )
+        result_raw = glob_search_tool.invoke({"pattern": "*.py", "runtime": _runtime()})
         result = result_raw.content
-        # Standard glob: *.py only matches files in root directory, not subdirectories
         assert result == str(["/test.py"])
 
     def test_glob_search_shortterm_wildcard_pattern(self):
         files = {
-            "/src/main.py": FileData(
-                content=["main code"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/src/utils/helper.py": FileData(
-                content=["helper code"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/tests/test_main.py": FileData(
-                content=["test code"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
+            "/src/main.py": FileData(content="main code", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/src/utils/helper.py": FileData(content="helper code", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/tests/test_main.py": FileData(content="test code", modified_at="2021-01-01", created_at="2021-01-01"),
         }
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        result_raw = glob_search_tool.invoke(
-            {
-                "pattern": "**/*.py",
-                "runtime": _runtime(),
-            }
-        )
+        result_raw = glob_search_tool.invoke({"pattern": "**/*.py", "runtime": _runtime()})
         result = result_raw.content
         assert "/src/main.py" in result
         assert "/src/utils/helper.py" in result
@@ -442,32 +292,14 @@ class TestFilesystemMiddleware:
 
     def test_glob_search_shortterm_with_path(self):
         files = {
-            "/src/main.py": FileData(
-                content=["main code"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/src/utils/helper.py": FileData(
-                content=["helper code"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/tests/test_main.py": FileData(
-                content=["test code"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
+            "/src/main.py": FileData(content="main code", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/src/utils/helper.py": FileData(content="helper code", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/tests/test_main.py": FileData(content="test code", modified_at="2021-01-01", created_at="2021-01-01"),
         }
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        result_raw = glob_search_tool.invoke(
-            {
-                "pattern": "*.py",
-                "path": "/src",
-                "runtime": _runtime(),
-            }
-        )
+        result_raw = glob_search_tool.invoke({"pattern": "*.py", "path": "/src", "runtime": _runtime()})
         result = result_raw.content
         assert "/src/main.py" in result
         assert "/src/utils/helper.py" not in result
@@ -475,53 +307,25 @@ class TestFilesystemMiddleware:
 
     def test_glob_search_shortterm_brace_expansion(self):
         files = {
-            "/test.py": FileData(
-                content=["code"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/test.pyi": FileData(
-                content=["stubs"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/test.txt": FileData(
-                content=["text"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
+            "/test.py": FileData(content="code", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/test.pyi": FileData(content="stubs", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/test.txt": FileData(content="text", modified_at="2021-01-01", created_at="2021-01-01"),
         }
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        result_raw = glob_search_tool.invoke(
-            {
-                "pattern": "*.{py,pyi}",
-                "runtime": _runtime(),
-            }
-        )
+        result_raw = glob_search_tool.invoke({"pattern": "*.{py,pyi}", "runtime": _runtime()})
         result = result_raw.content
         assert "/test.py" in result
         assert "/test.pyi" in result
         assert "/test.txt" not in result
 
     def test_glob_search_shortterm_no_matches(self):
-        files = {
-            "/test.txt": FileData(
-                content=["Hello world"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-        }
+        files = {"/test.txt": FileData(content="Hello world", modified_at="2021-01-01", created_at="2021-01-01")}
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        result = glob_search_tool.invoke(
-            {
-                "pattern": "*.py",
-                "runtime": _runtime(),
-            }
-        )
+        result = glob_search_tool.invoke({"pattern": "*.py", "runtime": _runtime()})
         assert result.content == "No files found"
 
     def test_glob_timeout_returns_error_message(self):
@@ -534,24 +338,12 @@ class TestFilesystemMiddleware:
             time.sleep(2)
             return []
 
-        with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "glob", side_effect=slow_glob),
-        ):
+        with patch.object(middleware, "_get_backend", return_value=backend_obj), patch.object(backend_obj, "glob", side_effect=slow_glob):
             start = time.monotonic()
-            result = glob_search_tool.invoke(
-                {
-                    "pattern": "**/*",
-                    "runtime": _runtime(),
-                }
-            )
+            result = glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
             elapsed = time.monotonic() - start
-
         assert "glob timed out after 0.5s" in result.content
         assert "narrower directory" in result.content or "more specific pattern" in result.content
-
-        # The tool must return as soon as the timeout fires, not block until
-        # the runaway glob (2s) finishes in its worker thread.
         assert elapsed < 1.5, f"glob tool blocked for {elapsed:.2f}s past its 0.5s timeout"
 
     def test_glob_timeout_does_not_stall_subsequent_calls(self):
@@ -560,7 +352,6 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=backend, glob_timeout_seconds=0.5)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
         backend_obj = middleware._get_backend(_runtime())
-
         call_count = 0
 
         def stuck_then_fast_glob(*args: object, **kwargs: object) -> object:
@@ -570,22 +361,14 @@ class TestFilesystemMiddleware:
                 time.sleep(2)
             return backend_obj.__class__.glob(backend_obj, *args, **kwargs)
 
-        with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "glob", side_effect=stuck_then_fast_glob),
-        ):
+        with patch.object(middleware, "_get_backend", return_value=backend_obj), patch.object(backend_obj, "glob", side_effect=stuck_then_fast_glob):
             first_start = time.monotonic()
             first = glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
             first_elapsed = time.monotonic() - first_start
             start = time.monotonic()
             second = glob_search_tool.invoke({"pattern": "*.py", "runtime": _runtime()})
             elapsed = time.monotonic() - start
-
         assert "timed out" in first.content
-        # The first (timing-out) call must itself return at the 0.5s timeout
-        # rather than block until its 2s worker finishes - an independent guard
-        # against the original `with`-block regression, where the timeout did
-        # not bound wall-clock latency.
         assert first_elapsed < 1.5, f"first glob blocked for {first_elapsed:.2f}s past its 0.5s timeout"
         assert second.status == "success"
         assert elapsed < 1.0, f"second glob waited {elapsed:.2f}s behind a stuck one"
@@ -601,12 +384,8 @@ class TestFilesystemMiddleware:
             msg = "path traversal not allowed"
             raise ValueError(msg)
 
-        with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "glob", side_effect=boom),
-        ):
+        with patch.object(middleware, "_get_backend", return_value=backend_obj), patch.object(backend_obj, "glob", side_effect=boom):
             result = glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
-
         assert result.status == "error"
         assert result.content == "Error: glob failed: path traversal not allowed"
 
@@ -627,76 +406,37 @@ class TestFilesystemMiddleware:
             msg = "backend RPC timed out"
             raise TimeoutError(msg)
 
-        with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "glob", side_effect=raise_timeout),
-        ):
+        with patch.object(middleware, "_get_backend", return_value=backend_obj), patch.object(backend_obj, "glob", side_effect=raise_timeout):
             result = glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
-
         assert result.status == "error"
         assert "timed out after" not in result.content
         assert result.content == "Error: glob failed: backend RPC timed out"
 
     def test_glob_search_truncates_large_results(self):
         """Test that glob results are truncated when they exceed token limit."""
-        # Create a large number of files that will exceed TOOL_RESULT_TOKEN_LIMIT
-        # TOOL_RESULT_TOKEN_LIMIT = 20000, * 4 chars/token = 80000 chars
-        # Create files with long paths to exceed this limit
         files = {}
-        # Create 2000 files with 50-char paths = 100,000 chars total (exceeds 80k limit)
         for i in range(2000):
             path = f"/very_long_file_name_to_increase_size_{i:04d}.txt"
-            files[path] = FileData(
-                content=["content"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            )
-
+            files[path] = FileData(content="content", modified_at="2021-01-01", created_at="2021-01-01")
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        result_raw = glob_search_tool.invoke(
-            {
-                "pattern": "*.txt",
-                "runtime": _runtime(),
-            }
-        )
-
-        # Result should be truncated
+        result_raw = glob_search_tool.invoke({"pattern": "*.txt", "runtime": _runtime()})
         result = result_raw.content
         assert isinstance(result, str)
-        assert len(result.split(", ")) < 2000  # Should be truncated to fewer files
-        # Last element should be the truncation message
-        # Need to do the :-2 to account for the wrapping list characters
+        assert len(result.split(", ")) < 2000
         assert result[:-2].endswith(TRUNCATION_GUIDANCE)
 
     def test_grep_search_shortterm_files_with_matches(self):
         files = {
-            "/test.py": FileData(
-                content=["import os", "import sys", "print('hello')"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/main.py": FileData(
-                content=["def main():", "    pass"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/helper.txt": FileData(
-                content=["import json"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
+            "/test.py": FileData(content="import os\nimport sys\nprint('hello')", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/main.py": FileData(content="def main():\n    pass", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/helper.txt": FileData(content="import json", modified_at="2021-01-01", created_at="2021-01-01"),
         }
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        result = grep_search_tool.invoke(
-            {
-                "pattern": "import",
-                "runtime": _runtime(),
-            }
-        )
+        result = grep_search_tool.invoke({"pattern": "import", "runtime": _runtime()})
         assert "/test.py" in result.content
         assert "/helper.txt" in result.content
         assert "/main.py" not in result.content
@@ -706,23 +446,14 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
         backend_obj = middleware._get_backend(_runtime())
-
         result_with_partial_matches = GrepResult(
-            error="Grep timed out after 30s with 1 matching file(s)",
-            matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
+            error="Grep timed out after 30s with 1 matching file(s)", matches=[{"path": "/test.py", "line": 1, "text": "import os"}]
         )
         with (
             patch.object(middleware, "_get_backend", return_value=backend_obj),
             patch.object(backend_obj, "grep", return_value=result_with_partial_matches),
         ):
-            result = grep_search_tool.invoke(
-                {
-                    "pattern": "import",
-                    "output_mode": "content",
-                    "runtime": _runtime(),
-                }
-            )
-
+            result = grep_search_tool.invoke({"pattern": "import", "output_mode": "content", "runtime": _runtime()})
         assert result.status == "error"
         assert "Grep timed out after 30s" in result.content
         assert "Partial matches:" in result.content
@@ -734,28 +465,16 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
         backend_obj = middleware._get_backend(_runtime())
-
-        error = "Grep failed on unreadable file\n" + ("x" * (TOOL_RESULT_TOKEN_LIMIT * 4 + 1000))
-        result_with_partial_matches = GrepResult(
-            error=error,
-            matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
-        )
+        error = "Grep failed on unreadable file\n" + "x" * (TOOL_RESULT_TOKEN_LIMIT * 4 + 1000)
+        result_with_partial_matches = GrepResult(error=error, matches=[{"path": "/test.py", "line": 1, "text": "import os"}])
         with (
             patch.object(middleware, "_get_backend", return_value=backend_obj),
             patch.object(backend_obj, "grep", return_value=result_with_partial_matches),
         ):
-            result = grep_search_tool.invoke(
-                {
-                    "pattern": "import",
-                    "output_mode": "content",
-                    "runtime": _runtime(),
-                }
-            )
-
+            result = grep_search_tool.invoke({"pattern": "import", "output_mode": "content", "runtime": _runtime()})
         assert result.status == "error"
         assert len(result.content) < len(error)
         assert TRUNCATION_GUIDANCE in result.content
-        # The error is truncated separately so partial matches survive.
         assert "Partial matches:" in result.content
         assert "/test.py" in result.content
         assert "1: import os" in result.content
@@ -766,23 +485,9 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
         backend_obj = middleware._get_backend(_runtime())
-
-        truncated_result = GrepResult(
-            matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
-            truncated=True,
-        )
-        with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "grep", return_value=truncated_result),
-        ):
-            result = grep_search_tool.invoke(
-                {
-                    "pattern": "import",
-                    "output_mode": "content",
-                    "runtime": _runtime(),
-                }
-            )
-
+        truncated_result = GrepResult(matches=[{"path": "/test.py", "line": 1, "text": "import os"}], truncated=True)
+        with patch.object(middleware, "_get_backend", return_value=backend_obj), patch.object(backend_obj, "grep", return_value=truncated_result):
+            result = grep_search_tool.invoke({"pattern": "import", "output_mode": "content", "runtime": _runtime()})
         assert result.status == "success"
         assert "1: import os" in result.content
         assert SEARCH_TRUNCATION_NOTE in result.content
@@ -793,19 +498,9 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
         backend_obj = middleware._get_backend(_runtime())
-
         truncated_result = GrepResult(matches=[], truncated=True)
-        with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "grep", return_value=truncated_result),
-        ):
-            result = grep_search_tool.invoke(
-                {
-                    "pattern": "def hello|def world",
-                    "runtime": _runtime(),
-                }
-            )
-
+        with patch.object(middleware, "_get_backend", return_value=backend_obj), patch.object(backend_obj, "grep", return_value=truncated_result):
+            result = grep_search_tool.invoke({"pattern": "def hello|def world", "runtime": _runtime()})
         assert result.status == "success"
         assert result.content.startswith("No matches found")
         assert SEARCH_TRUNCATION_NOTE in result.content
@@ -817,22 +512,9 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
         backend_obj = middleware._get_backend(_runtime())
-
-        truncated_result = GlobResult(
-            matches=[{"path": "/test.py", "is_dir": False}],
-            truncated=True,
-        )
-        with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "glob", return_value=truncated_result),
-        ):
-            result = glob_search_tool.invoke(
-                {
-                    "pattern": "*.py",
-                    "runtime": _runtime(),
-                }
-            )
-
+        truncated_result = GlobResult(matches=[{"path": "/test.py", "is_dir": False}], truncated=True)
+        with patch.object(middleware, "_get_backend", return_value=backend_obj), patch.object(backend_obj, "glob", return_value=truncated_result):
+            result = glob_search_tool.invoke({"pattern": "*.py", "runtime": _runtime()})
         assert result.status == "success"
         assert "/test.py" in result.content
         assert SEARCH_TRUNCATION_NOTE in result.content
@@ -843,14 +525,9 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
         backend_obj = middleware._get_backend(_runtime())
-
         complete_result = GrepResult(matches=[{"path": "/test.py", "line": 1, "text": "import os"}], truncated=False)
-        with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "grep", return_value=complete_result),
-        ):
+        with patch.object(middleware, "_get_backend", return_value=backend_obj), patch.object(backend_obj, "grep", return_value=complete_result):
             result = grep_search_tool.invoke({"pattern": "import", "output_mode": "content", "runtime": _runtime()})
-
         assert result.status == "success"
         assert SEARCH_TRUNCATION_NOTE not in result.content
 
@@ -860,14 +537,9 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
         backend_obj = middleware._get_backend(_runtime())
-
         complete_result = GlobResult(matches=[{"path": "/test.py", "is_dir": False}], truncated=False)
-        with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "glob", return_value=complete_result),
-        ):
+        with patch.object(middleware, "_get_backend", return_value=backend_obj), patch.object(backend_obj, "glob", return_value=complete_result):
             result = glob_search_tool.invoke({"pattern": "*.py", "runtime": _runtime()})
-
         assert result.status == "success"
         assert SEARCH_TRUNCATION_NOTE not in result.content
 
@@ -877,18 +549,11 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
         backend_obj = middleware._get_backend(_runtime())
-
-        # Enough matches to overflow the size limit so the match body is tail-cut.
         big_matches = [{"path": f"/f{i}.py", "line": i + 1, "text": "import os " * 8} for i in range(6000)]
         truncated_result = GrepResult(matches=big_matches, truncated=True)
-        with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "grep", return_value=truncated_result),
-        ):
+        with patch.object(middleware, "_get_backend", return_value=backend_obj), patch.object(backend_obj, "grep", return_value=truncated_result):
             result = grep_search_tool.invoke({"pattern": "import", "output_mode": "content", "runtime": _runtime()})
-
         assert result.status == "success"
-        # Size truncation engaged (body was cut) yet the time-limit note survived at the tail.
         assert TRUNCATION_GUIDANCE in result.content
         assert SEARCH_TRUNCATION_NOTE in result.content
 
@@ -898,14 +563,9 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
         backend_obj = middleware._get_backend(_runtime())
-
         truncated_result = GrepResult(matches=[{"path": "/test.py", "line": 1, "text": "import os"}], truncated=True)
-        with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "agrep", return_value=truncated_result),
-        ):
+        with patch.object(middleware, "_get_backend", return_value=backend_obj), patch.object(backend_obj, "agrep", return_value=truncated_result):
             result = await grep_search_tool.ainvoke({"pattern": "import", "output_mode": "content", "runtime": _runtime()})
-
         assert result.status == "success"
         assert "1: import os" in result.content
         assert SEARCH_TRUNCATION_NOTE in result.content
@@ -916,242 +576,113 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
         backend_obj = middleware._get_backend(_runtime())
-
         truncated_result = GlobResult(matches=[{"path": "/test.py", "is_dir": False}], truncated=True)
-        with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "aglob", return_value=truncated_result),
-        ):
+        with patch.object(middleware, "_get_backend", return_value=backend_obj), patch.object(backend_obj, "aglob", return_value=truncated_result):
             result = await glob_search_tool.ainvoke({"pattern": "*.py", "runtime": _runtime()})
-
         assert result.status == "success"
         assert "/test.py" in result.content
         assert SEARCH_TRUNCATION_NOTE in result.content
 
     def test_grep_search_shortterm_content_mode(self):
-        files = {
-            "/test.py": FileData(
-                content=["import os", "import sys", "print('hello')"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-        }
+        files = {"/test.py": FileData(content="import os\nimport sys\nprint('hello')", modified_at="2021-01-01", created_at="2021-01-01")}
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        result = grep_search_tool.invoke(
-            {
-                "pattern": "import",
-                "output_mode": "content",
-                "runtime": _runtime(),
-            }
-        )
+        result = grep_search_tool.invoke({"pattern": "import", "output_mode": "content", "runtime": _runtime()})
         assert "1: import os" in result.content
         assert "2: import sys" in result.content
         assert "print" not in result.content
 
     def test_grep_search_shortterm_count_mode(self):
         files = {
-            "/test.py": FileData(
-                content=["import os", "import sys", "print('hello')"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/main.py": FileData(
-                content=["import json", "data = {}"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
+            "/test.py": FileData(content="import os\nimport sys\nprint('hello')", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/main.py": FileData(content="import json\ndata = {}", modified_at="2021-01-01", created_at="2021-01-01"),
         }
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        result = grep_search_tool.invoke(
-            {
-                "pattern": "import",
-                "output_mode": "count",
-                "runtime": _runtime(),
-            }
-        )
+        result = grep_search_tool.invoke({"pattern": "import", "output_mode": "count", "runtime": _runtime()})
         assert "/test.py:2" in result.content or "/test.py: 2" in result.content
         assert "/main.py:1" in result.content or "/main.py: 1" in result.content
 
     def test_grep_search_shortterm_with_include(self):
         files = {
-            "/test.py": FileData(
-                content=["import os"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/test.txt": FileData(
-                content=["import nothing"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
+            "/test.py": FileData(content="import os", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/test.txt": FileData(content="import nothing", modified_at="2021-01-01", created_at="2021-01-01"),
         }
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        result = grep_search_tool.invoke(
-            {
-                "pattern": "import",
-                "glob": "*.py",
-                "runtime": _runtime(),
-            }
-        )
+        result = grep_search_tool.invoke({"pattern": "import", "glob": "*.py", "runtime": _runtime()})
         assert "/test.py" in result.content
         assert "/test.txt" not in result.content
 
     def test_grep_search_shortterm_with_path(self):
         files = {
-            "/src/main.py": FileData(
-                content=["import os"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-            "/tests/test.py": FileData(
-                content=["import pytest"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
+            "/src/main.py": FileData(content="import os", modified_at="2021-01-01", created_at="2021-01-01"),
+            "/tests/test.py": FileData(content="import pytest", modified_at="2021-01-01", created_at="2021-01-01"),
         }
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        result = grep_search_tool.invoke(
-            {
-                "pattern": "import",
-                "path": "/src",
-                "runtime": _runtime(),
-            }
-        )
+        result = grep_search_tool.invoke({"pattern": "import", "path": "/src", "runtime": _runtime()})
         assert "/src/main.py" in result.content
         assert "/tests/test.py" not in result.content
 
     def test_grep_search_shortterm_regex_pattern(self):
         """Test grep with literal pattern (not regex)."""
-        files = {
-            "/test.py": FileData(
-                content=["def hello():", "def world():", "x = 5"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-        }
+        files = {"/test.py": FileData(content="def hello():\ndef world():\nx = 5", modified_at="2021-01-01", created_at="2021-01-01")}
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        # Search for literal "def " - literal search, not regex
-        result = grep_search_tool.invoke(
-            {
-                "pattern": "def ",
-                "output_mode": "content",
-                "runtime": _runtime(),
-            }
-        )
+        result = grep_search_tool.invoke({"pattern": "def ", "output_mode": "content", "runtime": _runtime()})
         assert "1: def hello():" in result.content
         assert "2: def world():" in result.content
         assert "x = 5" not in result.content
 
     def test_grep_search_shortterm_no_matches(self):
-        files = {
-            "/test.py": FileData(
-                content=["print('hello')"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-        }
+        files = {"/test.py": FileData(content="print('hello')", modified_at="2021-01-01", created_at="2021-01-01")}
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        result = grep_search_tool.invoke(
-            {
-                "pattern": "import",
-                "runtime": _runtime(),
-            }
-        )
+        result = grep_search_tool.invoke({"pattern": "import", "runtime": _runtime()})
         assert result.content == "No matches found"
 
     def test_grep_search_shortterm_invalid_regex(self):
         """Test grep with special characters (literal search, not regex)."""
-        files = {
-            "/test.py": FileData(
-                content=["print('hello')"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-        }
+        files = {"/test.py": FileData(content="print('hello')", modified_at="2021-01-01", created_at="2021-01-01")}
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        # Special characters are treated literally, so no matches expected
-        result = grep_search_tool.invoke(
-            {
-                "pattern": "[invalid",
-                "runtime": _runtime(),
-            }
-        )
+        result = grep_search_tool.invoke({"pattern": "[invalid", "runtime": _runtime()})
         assert "No matches found" in result.content
 
     def test_grep_regex_pattern_no_matches_adds_hint(self):
         """A no-match pattern that looks like regex gets a literal-search hint."""
-        files = {
-            "/test.py": FileData(
-                content=["def hello():"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-        }
+        files = {"/test.py": FileData(content="def hello():", modified_at="2021-01-01", created_at="2021-01-01")}
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        result = grep_search_tool.invoke(
-            {
-                "pattern": "def hello|def world",
-                "runtime": _runtime(),
-            }
-        )
+        result = grep_search_tool.invoke({"pattern": "def hello|def world", "runtime": _runtime()})
         assert result.content.startswith("No matches found")
         assert "literal text, not regex" in result.content
 
     def test_grep_literal_no_matches_omits_hint(self):
         """A plain literal no-match pattern does not get the regex hint."""
-        files = {
-            "/test.py": FileData(
-                content=["print('hello')"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-        }
+        files = {"/test.py": FileData(content="print('hello')", modified_at="2021-01-01", created_at="2021-01-01")}
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        result = grep_search_tool.invoke(
-            {
-                "pattern": "import",
-                "runtime": _runtime(),
-            }
-        )
+        result = grep_search_tool.invoke({"pattern": "import", "runtime": _runtime()})
         assert result.content == "No matches found"
 
     def test_grep_regex_pattern_with_matches_omits_hint(self):
         """A regex-looking pattern that still matches literally shows no hint."""
-        files = {
-            "/test.py": FileData(
-                content=["a = b|c"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-        }
+        files = {"/test.py": FileData(content="a = b|c", modified_at="2021-01-01", created_at="2021-01-01")}
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        result = grep_search_tool.invoke(
-            {
-                "pattern": "b|c",
-                "output_mode": "content",
-                "runtime": _runtime(),
-            }
-        )
+        result = grep_search_tool.invoke({"pattern": "b|c", "output_mode": "content", "runtime": _runtime()})
         assert "a = b|c" in result.content
         assert "literal text, not regex" not in result.content
 
@@ -1162,25 +693,13 @@ class TestFilesystemMiddleware:
         strips that match. The empty result then reads "No matches found" for a
         redaction reason, so the regex hint would misattribute the cause.
         """
-        files = {
-            "/secret.py": FileData(
-                content=["a = b|c"],
-                modified_at="2021-01-01",
-                created_at="2021-01-01",
-            ),
-        }
+        files = {"/secret.py": FileData(content="a = b|c", modified_at="2021-01-01", created_at="2021-01-01")}
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(
-            backend=backend,
-            _permissions=[FilesystemPermission(operations=["read"], paths=["/secret.py"], mode="deny")],
+            backend=backend, _permissions=[FilesystemPermission(operations=["read"], paths=["/secret.py"], mode="deny")]
         )
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        result = grep_search_tool.invoke(
-            {
-                "pattern": "b|c",
-                "runtime": _runtime(),
-            }
-        )
+        result = grep_search_tool.invoke({"pattern": "b|c", "runtime": _runtime()})
         assert result.content == "No matches found"
         assert "literal text, not regex" not in result.content
 
@@ -1190,19 +709,9 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
         backend_obj = middleware._get_backend(_runtime())
-
         error_result = GrepResult(error="boom: backend exploded", matches=[])
-        with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "grep", return_value=error_result),
-        ):
-            result = grep_search_tool.invoke(
-                {
-                    "pattern": "def hello|def world",
-                    "runtime": _runtime(),
-                }
-            )
-
+        with patch.object(middleware, "_get_backend", return_value=backend_obj), patch.object(backend_obj, "grep", return_value=error_result):
+            result = grep_search_tool.invoke({"pattern": "def hello|def world", "runtime": _runtime()})
         assert result.status == "error"
         assert "literal text, not regex" not in result.content
 
@@ -1219,17 +728,10 @@ class TestFilesystemMiddleware:
             store.put(
                 ("filesystem",),
                 f"/file{i}.txt",
-                {
-                    "content": [f"content {i}"],
-                    "encoding": "utf-8",
-                    "created_at": "2021-01-01",
-                    "modified_at": "2021-01-01",
-                },
+                {"content": f"content {i}", "encoding": "utf-8", "created_at": "2021-01-01", "modified_at": "2021-01-01"},
             )
-
         result = StoreBackend._search_store_paginated(self, store, ("filesystem",), page_size=10)
         assert len(result) == 5
-        # Check that all files are present (order may vary)
         keys = {item.key for item in result}
         assert keys == {f"/file{i}.txt" for i in range(5)}
 
@@ -1240,14 +742,8 @@ class TestFilesystemMiddleware:
             store.put(
                 ("filesystem",),
                 f"/file{i}.txt",
-                {
-                    "content": [f"content {i}"],
-                    "encoding": "utf-8",
-                    "created_at": "2021-01-01",
-                    "modified_at": "2021-01-01",
-                },
+                {"content": f"content {i}", "encoding": "utf-8", "created_at": "2021-01-01", "modified_at": "2021-01-01"},
             )
-
         result = StoreBackend._search_store_paginated(self, store, ("filesystem",), page_size=10)
         assert len(result) == 10
         keys = {item.key for item in result}
@@ -1260,14 +756,8 @@ class TestFilesystemMiddleware:
             store.put(
                 ("filesystem",),
                 f"/file{i}.txt",
-                {
-                    "content": [f"content {i}"],
-                    "encoding": "utf-8",
-                    "created_at": "2021-01-01",
-                    "modified_at": "2021-01-01",
-                },
+                {"content": f"content {i}", "encoding": "utf-8", "created_at": "2021-01-01", "modified_at": "2021-01-01"},
             )
-
         result = StoreBackend._search_store_paginated(self, store, ("filesystem",), page_size=100)
         assert len(result) == 250
         keys = {item.key for item in result}
@@ -1281,39 +771,28 @@ class TestFilesystemMiddleware:
                 ("filesystem",),
                 f"/file{i}.txt",
                 {
-                    "content": [f"content {i}"],
+                    "content": f"content {i}",
                     "encoding": "utf-8",
                     "created_at": "2021-01-01",
                     "modified_at": "2021-01-01",
                     "type": "test" if i % 2 == 0 else "other",
                 },
             )
-
-        # Filter for type="test" (every other item, so 10 items)
         result = StoreBackend._search_store_paginated(self, store, ("filesystem",), filter={"type": "test"}, page_size=5)
         assert len(result) == 10
-        # Verify all returned items have type="test"
         for item in result:
             assert item.value.get("type") == "test"
 
     def test_search_store_paginated_custom_page_size(self):
         """Test pagination with custom page size."""
         store = InMemoryStore()
-        # Add 55 items
         for i in range(55):
             store.put(
                 ("filesystem",),
                 f"/file{i}.txt",
-                {
-                    "content": [f"content {i}"],
-                    "encoding": "utf-8",
-                    "created_at": "2021-01-01",
-                    "modified_at": "2021-01-01",
-                },
+                {"content": f"content {i}", "encoding": "utf-8", "created_at": "2021-01-01", "modified_at": "2021-01-01"},
             )
-
         result = StoreBackend._search_store_paginated(self, store, ("filesystem",), page_size=20)
-        # Should make 3 calls: 20, 20, 15
         assert len(result) == 55
         keys = {item.key for item in result}
         assert keys == {f"/file{i}.txt" for i in range(55)}
@@ -1323,9 +802,7 @@ class TestFilesystemMiddleware:
         long_line = "a" * 3500
         short_line = "short line"
         content = f"{short_line}\n{long_line}"
-
         file_data = create_file_data(content)
-
         assert isinstance(file_data["content"], str)
         assert file_data["content"] == content
         assert file_data["encoding"] == "utf-8"
@@ -1333,24 +810,19 @@ class TestFilesystemMiddleware:
     def test_update_file_data_preserves_long_lines(self):
         """Test that update_file_data stores content as a single string."""
         initial_file_data = create_file_data("initial content")
-
         long_line = "b" * 5000
         short_line = "another short line"
         new_content = f"{short_line}\n{long_line}"
-
         updated_file_data = update_file_data(initial_file_data, new_content)
-
         assert isinstance(updated_file_data["content"], str)
         assert updated_file_data["content"] == new_content
         assert updated_file_data["encoding"] == "utf-8"
-
         assert updated_file_data["created_at"] == initial_file_data["created_at"]
 
     def test_format_content_with_line_numbers_short_lines(self):
         """Test that short lines (<=10000 chars) are displayed normally."""
         content = ["short line 1", "short line 2", "short line 3"]
         result = format_content_with_line_numbers(content, start_line=1)
-
         lines = result.split("\n")
         assert len(lines) == 3
         assert "     1\tshort line 1" in lines[0]
@@ -1362,9 +834,8 @@ class TestFilesystemMiddleware:
         long_line = "a" * 25000
         content = ["short line", long_line, "another short line"]
         result = format_content_with_line_numbers(content, start_line=1)
-
         lines = result.split("\n")
-        assert len(lines) == 7  # 1 short + 5 continuation (2, 2.1, 2.2, 2.3, 2.4) + 1 short
+        assert len(lines) == 7
         assert "     1\tshort line" in lines[0]
         assert "     2\t" in lines[1]
         assert lines[1].count("a") == 5000
@@ -1385,7 +856,7 @@ class TestFilesystemMiddleware:
         content = [long_line_1, "middle", long_line_2]
         result = format_content_with_line_numbers(content, start_line=5)
         lines = result.split("\n")
-        assert len(lines) == 7  # 3 (line 5, 5.1, 5.2) + 1 middle + 3 (line 7, 7.1, 7.2)
+        assert len(lines) == 7
         assert "     5\t" in lines[0]
         assert lines[0].count("x") == 5000
         assert "   5.1\t" in lines[1]
@@ -1405,7 +876,6 @@ class TestFilesystemMiddleware:
         exact_line = "b" * 5000
         content = [exact_line]
         result = format_content_with_line_numbers(content, start_line=1)
-
         lines = result.split("\n")
         assert len(lines) == 1
         assert "     1\t" in lines[0]
@@ -1420,7 +890,7 @@ class TestFilesystemMiddleware:
         assert isinstance(sliced, str)
         result = format_content_with_line_numbers(sliced, start_line=1)
         lines = result.split("\n")
-        assert len(lines) == 5  # 1 first + 3 continuation (2, 2.1, 2.2) + 1 third
+        assert len(lines) == 5
         assert "     1\tfirst line" in lines[0]
         assert "     2\t" in lines[1]
         assert lines[1].count("z") == 5000
@@ -1439,7 +909,7 @@ class TestFilesystemMiddleware:
         assert isinstance(sliced, str)
         result = format_content_with_line_numbers(sliced, start_line=3)
         lines = result.split("\n")
-        assert len(lines) == 4  # 3 continuation (3, 3.1, 3.2) + 1 line4
+        assert len(lines) == 4
         assert "     3\t" in lines[0]
         assert lines[0].count("m") == 5000
         assert "   3.1\t" in lines[1]
@@ -1453,11 +923,9 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
-
         small_content = "x" * 1000
         tool_message = ToolMessage(content=small_content, tool_call_id="test_123")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
-
         assert result == tool_message
 
     def test_intercept_long_toolmessage(self):
@@ -1465,11 +933,9 @@ class TestFilesystemMiddleware:
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
-
         large_content = "x" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
-
         assert isinstance(result, ToolMessage)
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
         assert "Tool result too large" in result.content
@@ -1479,11 +945,9 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
-
         large_content = "x" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123", name="example_tool")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
-
         assert isinstance(result, ToolMessage)
         assert result.name == "example_tool"
 
@@ -1492,7 +956,6 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
-
         large_content = "x" * 5000
         artifact_payload = {"urls": ["https://example.com"], "ids": [42]}
         tool_message = ToolMessage(
@@ -1506,7 +969,6 @@ class TestFilesystemMiddleware:
             response_metadata={"provider": "mock"},
         )
         result = middleware._intercept_large_tool_result(tool_message, runtime)
-
         assert isinstance(result, ToolMessage)
         processed_message = result
         assert isinstance(processed_message, ToolMessage)
@@ -1521,12 +983,10 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
-
         small_content = "x" * 1000
         tool_message = ToolMessage(content=small_content, tool_call_id="test_123")
         command = Command(update={"messages": [tool_message], "files": {}})
         result = middleware._intercept_large_tool_result(command, runtime)
-
         assert isinstance(result, Command)
         assert result.update["messages"][0].content == small_content
 
@@ -1535,12 +995,10 @@ class TestFilesystemMiddleware:
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
-
         large_content = "y" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
         command = Command(update={"messages": [tool_message], "files": {}})
         result = middleware._intercept_large_tool_result(command, runtime)
-
         assert isinstance(result, Command)
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
         assert "Tool result too large" in result.update["messages"][0].content
@@ -1550,13 +1008,11 @@ class TestFilesystemMiddleware:
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
-
         large_content = "z" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
-        existing_file = FileData(content=["existing"], created_at="2021-01-01", modified_at="2021-01-01")
+        existing_file = FileData(content="existing", created_at="2021-01-01", modified_at="2021-01-01")
         command = Command(update={"messages": [tool_message], "files": {"/existing.txt": existing_file}, "custom_key": "custom_value"})
         result = middleware._intercept_large_tool_result(command, runtime)
-
         assert isinstance(result, Command)
         assert "/existing.txt" in result.update["files"]
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
@@ -1567,17 +1023,10 @@ class TestFilesystemMiddleware:
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
-
         large_content = "y" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
-        command = Command(
-            update={
-                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), tool_message],
-                "files": {},
-            }
-        )
+        command = Command(update={"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), tool_message], "files": {}})
         result = middleware._intercept_large_tool_result(command, runtime)
-
         assert isinstance(result, Command)
         messages = result.update["messages"]
         assert isinstance(messages, list)
@@ -1591,17 +1040,10 @@ class TestFilesystemMiddleware:
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
-
         large_content = "y" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
-        command = Command(
-            update={
-                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), tool_message],
-                "files": {},
-            }
-        )
+        command = Command(update={"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), tool_message], "files": {}})
         result = await middleware._aintercept_large_tool_result(command, runtime)
-
         assert isinstance(result, Command)
         messages = result.update["messages"]
         assert isinstance(messages, list)
@@ -1615,18 +1057,10 @@ class TestFilesystemMiddleware:
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
-
         small_content = "x" * 1000
         tool_message = ToolMessage(content=small_content, tool_call_id="test_123")
-        command = Command(
-            update={
-                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), tool_message],
-                "files": {},
-                "custom_key": "custom_value",
-            }
-        )
+        command = Command(update={"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), tool_message], "files": {}, "custom_key": "custom_value"})
         result = middleware._intercept_large_tool_result(command, runtime)
-
         assert isinstance(result, Command)
         messages = result.update["messages"]
         assert isinstance(messages, list)
@@ -1641,25 +1075,18 @@ class TestFilesystemMiddleware:
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
-
         ai_message = AIMessage(content="Use a tool")
         large_content = "y" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
         final_message = AIMessage(content="Done")
         command = Command(
             update={
-                "messages": [
-                    RemoveMessage(id=REMOVE_ALL_MESSAGES),
-                    ai_message,
-                    tool_message,
-                    final_message,
-                ],
+                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), ai_message, tool_message, final_message],
                 "files": {},
                 "custom_key": "custom_value",
             }
         )
         result = middleware._intercept_large_tool_result(command, runtime)
-
         assert isinstance(result, Command)
         messages = result.update["messages"]
         assert isinstance(messages, list)
@@ -1676,17 +1103,11 @@ class TestFilesystemMiddleware:
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
-
         ai_message = AIMessage(content="Use a tool")
         large_content = "y" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
-        command = Command(
-            update={
-                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), ai_message, tool_message],
-            }
-        )
+        command = Command(update={"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), ai_message, tool_message]})
         result = await middleware._aintercept_large_tool_result(command, runtime)
-
         assert isinstance(result, Command)
         messages = result.update["messages"]
         assert isinstance(messages, list)
@@ -1701,15 +1122,8 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
-
-        command = Command(
-            update={
-                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES)],
-                "custom_key": "custom_value",
-            }
-        )
+        command = Command(update={"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES)], "custom_key": "custom_value"})
         result = middleware._intercept_large_tool_result(command, runtime)
-
         assert isinstance(result, Command)
         messages = result.update["messages"]
         assert isinstance(messages, list)
@@ -1729,11 +1143,9 @@ class TestFilesystemMiddleware:
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
-
         large_content = "x" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test/call.id")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
-
         assert isinstance(result, ToolMessage)
         assert mem_store.get(("filesystem",), "/large_tool_results/test_call_id") is not None
 
@@ -1742,15 +1154,11 @@ class TestFilesystemMiddleware:
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
         runtime = _runtime("test_cb")
-
-        # Create list with content block with large text
         content_blocks = [{"type": "text", "text": "x" * 5000}]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_cb")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
-
         assert isinstance(result, ToolMessage)
         assert mem_store.get(("filesystem",), "/large_tool_results/test_cb") is not None
-        # After eviction, content is always converted to plain string
         assert isinstance(result.content, str)
         assert "Tool result too large" in result.content
 
@@ -1759,13 +1167,9 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_small_cb")
-
-        # Create list with content block with small text
         content_blocks = [{"type": "text", "text": "small text"}]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_small_cb")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
-
-        # Should return original message unchanged
         assert result == tool_message
         assert result.content == content_blocks
 
@@ -1774,11 +1178,9 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
         runtime = _runtime("test_other")
-
         content_blocks = [{"type": "image", "base64": "x" * 5000, "mime_type": "image/png"}]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_other")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
-
         assert result == tool_message
 
     @pytest.mark.parametrize("file_format", ["v1", "v2"])
@@ -1788,24 +1190,15 @@ class TestFilesystemMiddleware:
         be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format)
         middleware = FilesystemMiddleware(backend=be, tool_token_limit_before_evict=100)
         runtime = _runtime("test_single")
-
-        # Create single text block with large text
         content_blocks = [{"type": "text", "text": "Hello world! " * 1000}]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_single")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
-
         assert isinstance(result, ToolMessage)
-        # Check that the file contains actual text, not stringified dict
         item = mem_store.get(("filesystem",), "/large_tool_results/test_single")
         assert item is not None
         file_content = item.value["content"]
-        if file_format == "v1":
-            assert isinstance(file_content, list)
-            text = "\n".join(file_content)
-        else:
-            assert isinstance(file_content, str)
-            text = file_content
-        # Should start with the actual text, not with "[{" which would indicate stringified dict
+        assert isinstance(file_content, str)
+        text = file_content
         assert text.startswith("Hello world!")
         assert not text.startswith("[{")
 
@@ -1816,24 +1209,15 @@ class TestFilesystemMiddleware:
         be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format)
         middleware = FilesystemMiddleware(backend=be, tool_token_limit_before_evict=100)
         runtime = _runtime("test_multi")
-
-        content_blocks = [
-            {"type": "text", "text": "First block " * 500},
-            {"type": "text", "text": "Second block " * 500},
-        ]
+        content_blocks = [{"type": "text", "text": "First block " * 500}, {"type": "text", "text": "Second block " * 500}]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_multi")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
-
         assert isinstance(result, ToolMessage)
         item = mem_store.get(("filesystem",), "/large_tool_results/test_multi")
         assert item is not None
         file_content = item.value["content"]
-        if file_format == "v1":
-            assert isinstance(file_content, list)
-            text = "\n".join(file_content)
-        else:
-            assert isinstance(file_content, str)
-            text = file_content
+        assert isinstance(file_content, str)
+        text = file_content
         assert text.startswith("First block")
         assert "Second block" in text
         assert not text.startswith("[{")
@@ -1845,22 +1229,16 @@ class TestFilesystemMiddleware:
         be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format)
         middleware = FilesystemMiddleware(backend=be, tool_token_limit_before_evict=100)
         runtime = _runtime("test_mixed")
-
         image_block = {"type": "image", "url": "https://example.com/image.png"}
-        content_blocks = [
-            {"type": "text", "text": "Some text " * 200},
-            image_block,
-        ]
+        content_blocks = [{"type": "text", "text": "Some text " * 200}, image_block]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_mixed")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
-
         assert isinstance(result, ToolMessage)
         item = mem_store.get(("filesystem",), "/large_tool_results/test_mixed")
         assert item is not None
         file_content = item.value["content"]
-        text = "\n".join(file_content) if file_format == "v1" else file_content
-        assert text.startswith("Some text")
-
+        assert isinstance(file_content, str)
+        assert file_content.startswith("Some text")
         returned_content = result.content
         assert isinstance(returned_content, list)
         assert len(returned_content) == 2
@@ -1873,14 +1251,9 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_no_evict")
-
-        content_blocks = [
-            {"type": "text", "text": "small text"},
-            {"type": "image", "base64": "x" * 50000, "mime_type": "image/png"},
-        ]
+        content_blocks = [{"type": "text", "text": "small text"}, {"type": "image", "base64": "x" * 50000, "mime_type": "image/png"}]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_no_evict")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
-
         assert result == tool_message
 
     def test_read_file_image_returns_standard_image_content_block(self):
@@ -1888,27 +1261,13 @@ class TestFilesystemMiddleware:
 
         class ImageBackend(StateBackend):
             def read(self, path, *, offset=0, limit=100):
-                return ReadResult(
-                    file_data={
-                        "content": "<base64_data>",
-                        "encoding": "base64",
-                    }
-                )
+                return ReadResult(file_data={"content": "<base64_data>", "encoding": "base64"})
 
         middleware = FilesystemMiddleware(backend=ImageBackend())
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="img-read-1",
-            store=None,
-            stream_writer=lambda _: None,
-            config={},
-        )
-
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="img-read-1", store=None, stream_writer=lambda _: None, config={})
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
         result = read_file_tool.invoke({"file_path": "/app/screenshot.png", "runtime": runtime})
-
         assert isinstance(result, ToolMessage)
         assert result.name == "read_file"
         assert result.tool_call_id == "img-read-1"
@@ -1930,39 +1289,18 @@ class TestFilesystemMiddleware:
 
         class DocxBackend(StateBackend):
             def read(self, path, *, offset=0, limit=100):
-                return ReadResult(
-                    file_data={
-                        "content": "<docx_base64_data>",
-                        "encoding": "base64",
-                    }
-                )
+                return ReadResult(file_data={"content": "<docx_base64_data>", "encoding": "base64"})
 
         middleware = FilesystemMiddleware(backend=DocxBackend())
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="docx-read-1",
-            store=None,
-            stream_writer=lambda _: None,
-            config={},
-        )
-
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="docx-read-1", store=None, stream_writer=lambda _: None, config={})
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
         result = read_file_tool.invoke({"file_path": "/app/report.docx", "runtime": runtime})
-
         assert isinstance(result, ToolMessage)
         assert result.status == "success"
-        # Binary content_blocks, not a line-numbered text string.
         assert isinstance(result.content, list)
         assert result.content[0]["type"] == "file"
         assert result.content[0]["base64"] == "<docx_base64_data>"
-        # The block carries the best media type `mimetypes` can resolve for the
-        # extension, falling back to `application/octet-stream`. The resolved
-        # value is platform-dependent (`.docx` maps to the full Office type on
-        # macOS/Linux but to `application/octet-stream` on Windows, where
-        # `mimetypes` reads the registry), so mirror the production logic rather
-        # than hardcoding a single value.
         expected_mime = mimetypes.guess_type("file.docx")[0] or "application/octet-stream"
         assert result.content[0]["mime_type"] == expected_mime
 
@@ -1971,27 +1309,13 @@ class TestFilesystemMiddleware:
 
         class EmptyPdfBackend(StateBackend):
             def read(self, path, *, offset=0, limit=100):
-                return ReadResult(
-                    file_data={
-                        "content": "",
-                        "encoding": "base64",
-                    }
-                )
+                return ReadResult(file_data={"content": "", "encoding": "base64"})
 
         middleware = FilesystemMiddleware(backend=EmptyPdfBackend())
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="empty-pdf-1",
-            store=None,
-            stream_writer=lambda _: None,
-            config={},
-        )
-
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="empty-pdf-1", store=None, stream_writer=lambda _: None, config={})
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
         result = read_file_tool.invoke({"file_path": "/docs/report.pdf", "runtime": runtime})
-
         assert isinstance(result, ToolMessage)
         assert result.status == "success"
         assert result.content == EMPTY_CONTENT_WARNING
@@ -2001,27 +1325,13 @@ class TestFilesystemMiddleware:
 
         class EmptyDocxBackend(StateBackend):
             def read(self, path, *, offset=0, limit=100):
-                return ReadResult(
-                    file_data={
-                        "content": "",
-                        "encoding": "base64",
-                    }
-                )
+                return ReadResult(file_data={"content": "", "encoding": "base64"})
 
         middleware = FilesystemMiddleware(backend=EmptyDocxBackend())
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="empty-docx-1",
-            store=None,
-            stream_writer=lambda _: None,
-            config={},
-        )
-
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="empty-docx-1", store=None, stream_writer=lambda _: None, config={})
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
         result = read_file_tool.invoke({"file_path": "/docs/report.docx", "runtime": runtime})
-
         assert isinstance(result, ToolMessage)
         assert result.status == "success"
         assert result.content == EMPTY_CONTENT_WARNING
@@ -2035,113 +1345,20 @@ class TestFilesystemMiddleware:
 
         middleware = FilesystemMiddleware(backend=ImageBackend())
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="img-read-err",
-            store=None,
-            stream_writer=lambda _: None,
-            config={},
-        )
-
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="img-read-err", store=None, stream_writer=lambda _: None, config={})
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
         result = read_file_tool.invoke({"file_path": "/app/missing.png", "runtime": runtime})
-
         assert isinstance(result, ToolMessage)
         assert result.content == "Error: file_not_found"
-
-    def test_read_file_handles_str_from_backend(self):
-        """Test that read_file works when backend.read() returns a plain str."""
-
-        class StrReadBackend(StateBackend):
-            def read(self, path, *, offset=0, limit=100):
-                return "     1\tline one\n     2\tline two"
-
-        middleware = FilesystemMiddleware(backend=StrReadBackend())
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="str-read",
-            store=None,
-            stream_writer=lambda _: None,
-            config={},
-        )
-
-        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
-        with pytest.warns(DeprecationWarning, match="Returning a plain `str`"):
-            result = read_file_tool.invoke({"file_path": "/app/file.txt", "runtime": runtime})
-
-        assert isinstance(result, ToolMessage)
-        assert "line one" in result.content
-
-    def test_read_file_str_backend_line_limit_truncation(self):
-        """Legacy str backend respects the line-count limit."""
-
-        class StrReadBackend(StateBackend):
-            def read(self, path, *, offset=0, limit=100):
-                return "\n".join(f"{i:6d}\tline {i}" for i in range(1, 201))
-
-        middleware = FilesystemMiddleware(backend=StrReadBackend())
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="str-trunc",
-            store=None,
-            stream_writer=lambda _: None,
-            config={},
-        )
-
-        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
-        with pytest.warns(DeprecationWarning, match="Returning a plain `str`"):
-            result = read_file_tool.invoke({"file_path": "/app/big.txt", "limit": 50, "runtime": runtime})
-
-        assert isinstance(result, ToolMessage)
-        output_lines = [ln for ln in result.content.splitlines() if ln.strip()]
-        assert len(output_lines) <= 50
-
-    def test_read_file_str_backend_token_truncation(self):
-        """Legacy str backend applies token-based truncation for huge content."""
-        token_limit = 500
-
-        class StrReadBackend(StateBackend):
-            def read(self, path, *, offset=0, limit=100):
-                return "x" * (NUM_CHARS_PER_TOKEN * token_limit + 1000)
-
-        middleware = FilesystemMiddleware(
-            backend=StrReadBackend(),
-            tool_token_limit_before_evict=token_limit,
-        )
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="str-tok",
-            store=None,
-            stream_writer=lambda _: None,
-            config={},
-        )
-
-        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
-        with pytest.warns(DeprecationWarning, match="Returning a plain `str`"):
-            result = read_file_tool.invoke({"file_path": "/app/huge.txt", "runtime": runtime})
-
-        assert isinstance(result, ToolMessage)
-        assert "Output was truncated due to size limits" in result.content
-        assert len(result.content) <= NUM_CHARS_PER_TOKEN * token_limit
 
     def test_read_file_empty_file_returns_warning(self):
         """ReadResult with empty content returns the empty-content warning."""
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         runtime = _runtime("empty-read")
-
         backend.write("/empty.txt", "")
-
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
         result = read_file_tool.invoke({"file_path": "/empty.txt", "runtime": runtime})
-
         assert isinstance(result, ToolMessage)
         assert result.content == EMPTY_CONTENT_WARNING
 
@@ -2149,23 +1366,9 @@ class TestFilesystemMiddleware:
         """Test that execute tool returns friendly error instead of raising exception."""
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
-
-        # Find the execute tool
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
-
-        # Create runtime with StoreBackend
-        runtime = ToolRuntime(
-            state={},
-            context=None,
-            tool_call_id="test_exec",
-            store=InMemoryStore(),
-            stream_writer=lambda _: None,
-            config={},
-        )
-
-        # Execute should return error message, not raise exception
+        runtime = ToolRuntime(state={}, context=None, tool_call_id="test_exec", store=InMemoryStore(), stream_writer=lambda _: None, config={})
         result = execute_tool.invoke({"command": "ls -la", "runtime": runtime})
-
         assert isinstance(result, ToolMessage)
         assert "Error: Execution not available" in result.content
         assert "does not support command execution" in result.content
@@ -2178,11 +1381,9 @@ class TestFilesystemMiddleware:
         """
 
         class _NoDeleteBackend(StateBackend):
-            # Opt out of delete support by inheriting the protocol's default.
             delete = BackendProtocol.delete
 
         middleware = FilesystemMiddleware(backend=_NoDeleteBackend(), system_prompt="")
-
         ls_tool = MagicMock()
         ls_tool.name = "ls"
         delete_tool = MagicMock()
@@ -2190,9 +1391,7 @@ class TestFilesystemMiddleware:
         request = MagicMock()
         request.tools = [ls_tool, delete_tool]
         request.override.return_value = request
-
         middleware._filter_unsupported_tools_and_apply_prompt(request)
-
         request.override.assert_called_once()
         filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
         assert "delete" not in filtered_names
@@ -2201,7 +1400,6 @@ class TestFilesystemMiddleware:
     def test_delete_kept_when_backend_supports_delete(self):
         """Delete stays in the request when the backend supports deletion."""
         middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
-
         ls_tool = MagicMock()
         ls_tool.name = "ls"
         delete_tool = MagicMock()
@@ -2209,11 +1407,7 @@ class TestFilesystemMiddleware:
         request = MagicMock()
         request.tools = [ls_tool, delete_tool]
         request.override.return_value = request
-
         middleware._filter_unsupported_tools_and_apply_prompt(request)
-
-        # StateBackend supports delete (and no execute tool is present), so no
-        # tool filtering — and with an empty system prompt, no override at all.
         request.override.assert_not_called()
 
     def test_enabled_tools_raises_when_read_file_excluded(self):
@@ -2223,11 +1417,7 @@ class TestFilesystemMiddleware:
 
     def test_enabled_tools_filters_unlisted_tool(self):
         """A tool not in tools is filtered out of the model request."""
-        middleware = FilesystemMiddleware(
-            backend=StateBackend(),
-            system_prompt="",
-            tools=["read_file", "ls"],
-        )
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="", tools=["read_file", "ls"])
         write_tool = MagicMock()
         write_tool.name = "write_file"
         ls_tool = MagicMock()
@@ -2235,29 +1425,21 @@ class TestFilesystemMiddleware:
         request = MagicMock()
         request.tools = [ls_tool, write_tool]
         request.override.return_value = request
-
         middleware._filter_unsupported_tools_and_apply_prompt(request)
-
         filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
         assert "write_file" not in filtered_names
         assert "ls" in filtered_names
 
     def test_enabled_tools_filters_multiple_unlisted(self):
         """Only tools in the allowlist survive; the rest are filtered."""
-        middleware = FilesystemMiddleware(
-            backend=StateBackend(),
-            system_prompt="",
-            tools=["read_file", "ls", "grep"],
-        )
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="", tools=["read_file", "ls", "grep"])
         tools = [MagicMock(name=n) for n in ("ls", "write_file", "delete", "grep")]
         for t in tools:
             t.name = t._mock_name
         request = MagicMock()
         request.tools = tools
         request.override.return_value = request
-
         middleware._filter_unsupported_tools_and_apply_prompt(request)
-
         filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
         assert "write_file" not in filtered_names
         assert "delete" not in filtered_names
@@ -2266,11 +1448,7 @@ class TestFilesystemMiddleware:
 
     def test_enabled_tools_does_not_filter_user_provided_tools(self):
         """User-provided (non-filesystem) tools are never removed by the allowlist."""
-        middleware = FilesystemMiddleware(
-            backend=StateBackend(),
-            system_prompt="",
-            tools=["read_file", "ls"],
-        )
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="", tools=["read_file", "ls"])
         ls_tool = MagicMock()
         ls_tool.name = "ls"
         write_tool = MagicMock()
@@ -2280,21 +1458,15 @@ class TestFilesystemMiddleware:
         request = MagicMock()
         request.tools = [ls_tool, write_tool, custom_tool]
         request.override.return_value = request
-
         middleware._filter_unsupported_tools_and_apply_prompt(request)
-
         filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
         assert "ls" in filtered_names
-        assert "search" in filtered_names  # user tool untouched
-        assert "write_file" not in filtered_names  # FS tool not in allowlist
+        assert "search" in filtered_names
+        assert "write_file" not in filtered_names
 
     def test_enabled_tools_passes_listed_tools_through(self):
         """Tools in the allowlist survive; an unlisted tool is dropped."""
-        middleware = FilesystemMiddleware(
-            backend=StateBackend(),
-            system_prompt="",
-            tools=["read_file", "ls", "grep"],
-        )
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="", tools=["read_file", "ls", "grep"])
         ls_tool = MagicMock()
         ls_tool.name = "ls"
         grep_tool = MagicMock()
@@ -2304,9 +1476,7 @@ class TestFilesystemMiddleware:
         request = MagicMock()
         request.tools = [ls_tool, grep_tool, edit_tool]
         request.override.return_value = request
-
         middleware._filter_unsupported_tools_and_apply_prompt(request)
-
         filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
         assert "ls" in filtered_names
         assert "grep" in filtered_names
@@ -2315,50 +1485,34 @@ class TestFilesystemMiddleware:
     def test_enabled_tools_read_file_only_filters_everything_else(self):
         """tools=["read_file"] hides all other tools."""
         all_other_tools = {"ls", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
-        middleware = FilesystemMiddleware(
-            backend=StateBackend(),
-            system_prompt="",
-            tools=["read_file"],
-        )
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="", tools=["read_file"])
         tools = [MagicMock() for _ in range(len(all_other_tools) + 1)]
         for t, name in zip(tools, [*all_other_tools, "read_file"], strict=True):
             t.name = name
         request = MagicMock()
         request.tools = tools
         request.override.return_value = request
-
         middleware._filter_unsupported_tools_and_apply_prompt(request)
-
         filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
         assert "read_file" in filtered_names
         assert filtered_names == {"read_file"}
 
     def test_enabled_tools_none_default_passes_all_tools(self):
         """tools=None (default) does not filter any tools."""
-        middleware = FilesystemMiddleware(
-            backend=StateBackend(),
-            system_prompt="",
-        )
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
         tools = [MagicMock() for _ in range(3)]
         for t, name in zip(tools, ["ls", "read_file", "write_file"], strict=True):
             t.name = name
         request = MagicMock()
         request.tools = tools
         request.override.return_value = request
-
         middleware._filter_unsupported_tools_and_apply_prompt(request)
-
-        # No tools=... override should have been made (nothing filtered)
         tools_overrides = [c for c in request.override.call_args_list if "tools" in c.kwargs]
         assert tools_overrides == []
 
     def test_enabled_tools_execute_listed_but_backend_unsupported_is_noop(self):
         """Execute in tools list is still filtered when the backend doesn't support execution."""
-        middleware = FilesystemMiddleware(
-            backend=StateBackend(),  # StateBackend has no execution support
-            system_prompt="",
-            tools=["read_file", "ls", "execute"],
-        )
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="", tools=["read_file", "ls", "execute"])
         ls_tool = MagicMock()
         ls_tool.name = "ls"
         execute_tool = MagicMock()
@@ -2367,9 +1521,7 @@ class TestFilesystemMiddleware:
         request.tools = [ls_tool, execute_tool]
         request.runtime = MagicMock()
         request.override.return_value = request
-
         middleware._filter_unsupported_tools_and_apply_prompt(request)
-
         filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
         assert "execute" not in filtered_names
         assert "ls" in filtered_names
@@ -2381,9 +1533,7 @@ class TestFilesystemMiddleware:
         request.tools = middleware.tools
         request.runtime = _runtime()
         request.override.return_value = request
-
         middleware._filter_unsupported_tools_and_apply_prompt(request)
-
         tools_override = [c.kwargs["tools"] for c in request.override.call_args_list if "tools" in c.kwargs][-1]
         grep_tool = next(tool for tool in tools_override if tool.name == "grep")
         assert "execute tool" not in grep_tool.description
@@ -2397,18 +1547,12 @@ class TestFilesystemMiddleware:
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(output="", exit_code=0)
 
-        middleware = FilesystemMiddleware(
-            backend=_SandboxBackend(),
-            system_prompt="",
-            tools=["read_file", "ls", "grep"],
-        )
+        middleware = FilesystemMiddleware(backend=_SandboxBackend(), system_prompt="", tools=["read_file", "ls", "grep"])
         request = MagicMock()
         request.tools = middleware.tools
         request.runtime = _runtime()
         request.override.return_value = request
-
         middleware._filter_unsupported_tools_and_apply_prompt(request)
-
         tools_override = [c.kwargs["tools"] for c in request.override.call_args_list if "tools" in c.kwargs][-1]
         grep_tool = next(tool for tool in tools_override if tool.name == "grep")
         assert "execute" not in {tool.name for tool in tools_override}
@@ -2427,9 +1571,7 @@ class TestFilesystemMiddleware:
         request.tools = middleware.tools
         request.runtime = _runtime()
         request.override.return_value = request
-
         middleware._filter_unsupported_tools_and_apply_prompt(request)
-
         tools_overrides = [c for c in request.override.call_args_list if "tools" in c.kwargs]
         grep_tool = next(tool for tool in middleware.tools if tool.name == "grep")
         assert tools_overrides == []
@@ -2439,18 +1581,12 @@ class TestFilesystemMiddleware:
     def test_custom_grep_description_is_not_rewritten_when_execute_hidden(self):
         """User-provided grep docs remain authoritative."""
         custom_description = "Custom literal search guidance."
-        middleware = FilesystemMiddleware(
-            backend=StateBackend(),
-            system_prompt="",
-            custom_tool_descriptions={"grep": custom_description},
-        )
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="", custom_tool_descriptions={"grep": custom_description})
         request = MagicMock()
         request.tools = middleware.tools
         request.runtime = _runtime()
         request.override.return_value = request
-
         middleware._filter_unsupported_tools_and_apply_prompt(request)
-
         tools_override = [c.kwargs["tools"] for c in request.override.call_args_list if "tools" in c.kwargs][-1]
         grep_tool = next(tool for tool in tools_override if tool.name == "grep")
         assert grep_tool.description == custom_description
@@ -2460,24 +1596,17 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
         default_description = next(tool for tool in middleware.tools if tool.name == "grep").description
         original = {"name": "grep", "description": default_description}
-
         rewritten = middleware._with_filtered_grep_description([original], include_execution=False)
-
         rewritten_grep = next(tool for tool in rewritten if tool["name"] == "grep")
-        # Swapped via a copy, never mutated in place.
         assert rewritten_grep is not original
         assert original["description"] == default_description
-        # The copy carries the without-execute variant.
         assert "execute tool" not in rewritten_grep["description"]
         assert "rg '<regex>'" not in rewritten_grep["description"]
         assert "LITERAL text pattern" in rewritten_grep["description"]
 
     def test_enabled_tools_system_prompt_lists_only_enabled_tools(self):
         """Dynamic system prompt only mentions the tools that survived filtering."""
-        middleware = FilesystemMiddleware(
-            backend=StateBackend(),
-            tools=["read_file", "ls"],
-        )
+        middleware = FilesystemMiddleware(backend=StateBackend(), tools=["read_file", "ls"])
         ls_tool = MagicMock()
         ls_tool.name = "ls"
         write_tool = MagicMock()
@@ -2486,9 +1615,7 @@ class TestFilesystemMiddleware:
         request.tools = [ls_tool, write_tool]
         request.system_message = None
         request.override.return_value = request
-
         middleware._filter_unsupported_tools_and_apply_prompt(request)
-
         system_message_override = next(c for c in request.override.call_args_list if "system_message" in c.kwargs)
         content = system_message_override.kwargs["system_message"].content
         system_text = content if isinstance(content, str) else " ".join(b["text"] for b in content if isinstance(b, dict) and "text" in b)
@@ -2501,15 +1628,12 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(backend=StateBackend())
         sentinel_prompt = "CACHED-FILESYSTEM-PROMPT"
         middleware._dynamic_system_prompt_cache[False] = sentinel_prompt
-
         request = MagicMock()
         request.tools = middleware.tools
         request.system_message = None
         request.runtime = _runtime()
         request.override.return_value = request
-
         middleware._filter_unsupported_tools_and_apply_prompt(request)
-
         system_message_override = next(c for c in request.override.call_args_list if "system_message" in c.kwargs)
         content = system_message_override.kwargs["system_message"].content
         system_text = content if isinstance(content, str) else " ".join(b["text"] for b in content if isinstance(b, dict) and "text" in b)
@@ -2525,27 +1649,11 @@ class TestFilesystemMiddleware:
         assert "traversal" in result.content
 
     def test_apply_diff_tool_updates_file_content(self):
-        backend, _ = _make_backend(
-            {
-                "/test.txt": FileData(
-                    content="old content\n",
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                )
-            }
-        )
+        backend, _ = _make_backend({"/test.txt": FileData(content="old content\n", modified_at="2021-01-01", created_at="2021-01-01")})
         middleware = FilesystemMiddleware(backend=backend, system_prompt="")
         apply_diff_tool = next(tool for tool in middleware.tools if tool.name == "apply_diff")
         diff = "--- test.txt\n+++ test.txt\n@@ -1 +1 @@\n-old content\n+new content\n"
-
-        result = apply_diff_tool.invoke(
-            {
-                "file_path": "/test.txt",
-                "diff": diff,
-                "runtime": _runtime("ad1"),
-            }
-        )
-
+        result = apply_diff_tool.invoke({"file_path": "/test.txt", "diff": diff, "runtime": _runtime("ad1")})
         assert isinstance(result, ToolMessage)
         assert result.status == "success"
         assert "Applied diff" in result.content
@@ -2554,26 +1662,10 @@ class TestFilesystemMiddleware:
         assert read_result.file_data["content"] == "new content\n"
 
     def test_apply_diff_tool_rejects_invalid_diff(self):
-        backend, _ = _make_backend(
-            {
-                "/test.txt": FileData(
-                    content="old content\n",
-                    modified_at="2021-01-01",
-                    created_at="2021-01-01",
-                )
-            }
-        )
+        backend, _ = _make_backend({"/test.txt": FileData(content="old content\n", modified_at="2021-01-01", created_at="2021-01-01")})
         middleware = FilesystemMiddleware(backend=backend, system_prompt="")
         apply_diff_tool = next(tool for tool in middleware.tools if tool.name == "apply_diff")
-
-        result = apply_diff_tool.invoke(
-            {
-                "file_path": "/test.txt",
-                "diff": "invalid diff",
-                "runtime": _runtime("ad2"),
-            }
-        )
-
+        result = apply_diff_tool.invoke({"file_path": "/test.txt", "diff": "invalid diff", "runtime": _runtime("ad2")})
         assert isinstance(result, ToolMessage)
         assert result.status == "error"
         assert "Failed to apply diff with Python fallback" in result.content
@@ -2581,35 +1673,20 @@ class TestFilesystemMiddleware:
     def test_execute_tool_output_formatting(self):
         """Test execute tool formats output correctly."""
 
-        # Mock sandbox backend that returns specific output
         class FormattingMockSandboxBackend(SandboxBackendProtocol, StateBackend):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-                return ExecuteResponse(
-                    output="Hello world\nLine 2",
-                    exit_code=0,
-                    truncated=False,
-                )
+                return ExecuteResponse(output="Hello world\nLine 2", exit_code=0, truncated=False)
 
             @property
             def id(self):
                 return "formatting-mock-sandbox-backend"
 
         state = FilesystemState(messages=[], files={})
-        rt = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="test_fmt",
-            store=InMemoryStore(),
-            stream_writer=lambda _: None,
-            config={},
-        )
-
+        rt = ToolRuntime(state=state, context=None, tool_call_id="test_fmt", store=InMemoryStore(), stream_writer=lambda _: None, config={})
         backend = FormattingMockSandboxBackend()
         middleware = FilesystemMiddleware(backend=backend)
-
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = execute_tool.invoke({"command": "echo test", "runtime": rt})
-
         assert "Hello world\nLine 2" in result.content
         assert "succeeded" in result.content
         assert "exit code 0" in result.content
@@ -2617,35 +1694,20 @@ class TestFilesystemMiddleware:
     def test_execute_tool_output_formatting_with_failure(self):
         """Test execute tool formats failure output correctly."""
 
-        # Mock sandbox backend that returns failure
         class FailureMockSandboxBackend(SandboxBackendProtocol, StateBackend):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-                return ExecuteResponse(
-                    output="Error: command not found",
-                    exit_code=127,
-                    truncated=False,
-                )
+                return ExecuteResponse(output="Error: command not found", exit_code=127, truncated=False)
 
             @property
             def id(self):
                 return "failure-mock-sandbox-backend"
 
         state = FilesystemState(messages=[], files={})
-        rt = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="test_fail",
-            store=InMemoryStore(),
-            stream_writer=lambda _: None,
-            config={},
-        )
-
+        rt = ToolRuntime(state=state, context=None, tool_call_id="test_fail", store=InMemoryStore(), stream_writer=lambda _: None, config={})
         backend = FailureMockSandboxBackend()
         middleware = FilesystemMiddleware(backend=backend)
-
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = execute_tool.invoke({"command": "nonexistent", "runtime": rt})
-
         assert "Error: command not found" in result.content
         assert "failed" in result.content
         assert "exit code 127" in result.content
@@ -2653,42 +1715,26 @@ class TestFilesystemMiddleware:
     def test_execute_tool_output_formatting_with_truncation(self):
         """Test execute tool formats truncated output correctly."""
 
-        # Mock sandbox backend that returns truncated output
         class TruncatedMockSandboxBackend(SandboxBackendProtocol, StateBackend):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-                return ExecuteResponse(
-                    output="Very long output...",
-                    exit_code=0,
-                    truncated=True,
-                )
+                return ExecuteResponse(output="Very long output...", exit_code=0, truncated=True)
 
             @property
             def id(self):
                 return "failure-mock-sandbox-backend"
 
         state = FilesystemState(messages=[], files={})
-        rt = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="test_trunc",
-            store=InMemoryStore(),
-            stream_writer=lambda _: None,
-            config={},
-        )
-
+        rt = ToolRuntime(state=state, context=None, tool_call_id="test_trunc", store=InMemoryStore(), stream_writer=lambda _: None, config={})
         backend = TruncatedMockSandboxBackend()
         middleware = FilesystemMiddleware(backend=backend)
-
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = execute_tool.invoke({"command": "cat large_file", "runtime": rt})
-
         assert "Very long output..." in result.content
         assert "truncated" in result.content
 
     def testsupports_execution_helper_with_composite_backend(self):
         """Test supports_execution correctly identifies CompositeBackend capabilities."""
 
-        # Mock sandbox backend
         class TestSandboxBackend(SandboxBackendProtocol, StateBackend):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
@@ -2698,28 +1744,13 @@ class TestFilesystemMiddleware:
                 return "test-sandbox-backend"
 
         state = FilesystemState(messages=[], files={})
-        ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="test",
-            store=InMemoryStore(),
-            stream_writer=lambda _: None,
-            config={},
-        )
-
-        # StateBackend doesn't support execution
+        ToolRuntime(state=state, context=None, tool_call_id="test", store=InMemoryStore(), stream_writer=lambda _: None, config={})
         state_backend = StateBackend()
         assert not supports_execution(state_backend)
-
-        # TestSandboxBackend supports execution
         sandbox_backend = TestSandboxBackend()
         assert supports_execution(sandbox_backend)
-
-        # CompositeBackend with sandbox default supports execution
         comp_with_sandbox = CompositeBackend(default=sandbox_backend, routes={})
         assert supports_execution(comp_with_sandbox)
-
-        # CompositeBackend with non-sandbox default doesn't support execution
         comp_without_sandbox = CompositeBackend(default=state_backend, routes={})
         assert not supports_execution(comp_without_sandbox)
 
@@ -2728,99 +1759,63 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
-
-        # Create content with 15 lines (more than head_lines + tail_lines = 10) to trigger truncation
-        # Some lines are longer than 1000 chars to test line truncation
         lines_content = [
             "line 0",
-            "a" * 2000,  # Long line in head
+            "a" * 2000,
             "line 2",
             "line 3",
             "line 4",
-            "line 5",  # This will be truncated
+            "line 5",
             "line 6",
             "line 7",
             "line 8",
             "line 9",
             "line 10",
             "line 11",
-            "b" * 2000,  # Long line in tail
+            "b" * 2000,
             "line 13",
             "line 14",
         ]
         large_content = "\n".join(lines_content)
-
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
-
         assert isinstance(result, ToolMessage)
         content_sample_section = result.content
-
-        # Verify the message contains the expected structure with head and tail
         assert "Tool result too large" in content_sample_section
         assert "head and tail" in content_sample_section
-
-        # Verify truncation notice is present
         assert "lines truncated" in content_sample_section
         assert "[5 lines truncated]" in content_sample_section
-
-        # Verify head lines are present (lines 0-4)
         assert "line 0" in content_sample_section
         assert "line 4" in content_sample_section
-
-        # Verify tail lines are present (lines 10-14)
         assert "line 10" in content_sample_section
         assert "line 14" in content_sample_section
-
-        # Verify middle lines are NOT present (lines 5-9)
         assert "line 5" not in content_sample_section
         assert "line 9" not in content_sample_section
-
-        # Check each line in the content sample doesn't exceed 1000 chars
         lines = content_sample_section.split("\n")
         for line in lines:
-            if line.strip() and "truncated" not in line:  # Skip empty lines and truncation notice
+            if line.strip() and "truncated" not in line:
                 assert len(line) <= 1010, f"Line exceeds 1000 chars: {len(line)} chars"
 
-    @pytest.mark.parametrize(
-        ("num_lines", "should_truncate"),
-        [
-            (0, False),  # Empty content
-            (1, False),  # Single line
-            (5, False),  # Fewer than head_lines + tail_lines
-            (10, False),  # Exactly head_lines + tail_lines
-            (11, True),  # Just over threshold
-            (20, True),  # Well over threshold
-        ],
-    )
+    @pytest.mark.parametrize(("num_lines", "should_truncate"), [(0, False), (1, False), (5, False), (10, False), (11, True), (20, True)])
     def test_content_preview_edge_cases(self, num_lines, should_truncate):
         """Test _create_content_preview with various line counts."""
-        # Create content with specified number of lines
         if num_lines == 0:
             content_str = ""
         else:
             lines = [f"line {i}" for i in range(num_lines)]
             content_str = "\n".join(lines)
-
         preview = _create_content_preview(content_str)
-
         if should_truncate:
-            # Should have truncation notice
             assert "truncated" in preview
-            # Should have head lines (0-4)
             assert "line 0" in preview
             assert "line 4" in preview
-            # Should have tail lines
             assert f"line {num_lines - 5}" in preview
             assert f"line {num_lines - 1}" in preview
-            # Should NOT have middle lines
             if num_lines > 11:
                 assert "line 5" not in preview
                 assert f"line {num_lines - 6}" not in preview
         else:
-            # Should NOT have truncation notice
             assert "truncated" not in preview
-            # Should have all lines
             for i in range(num_lines):
                 assert f"line {i}" in preview
 
@@ -2835,22 +1830,12 @@ class TestExtractTextFromMessage:
         assert _extract_text_from_message(msg) == "hello"
 
     def test_multiple_text_blocks_joined(self):
-        msg = ToolMessage(
-            content=[
-                {"type": "text", "text": "first"},
-                {"type": "text", "text": "second"},
-            ],
-            tool_call_id="t1",
-        )
+        msg = ToolMessage(content=[{"type": "text", "text": "first"}, {"type": "text", "text": "second"}], tool_call_id="t1")
         assert _extract_text_from_message(msg) == "first\nsecond"
 
     def test_text_and_image_extracts_text_only(self):
         msg = ToolMessage(
-            content=[
-                {"type": "text", "text": "description"},
-                {"type": "image", "url": "https://example.com/img.png"},
-            ],
-            tool_call_id="t1",
+            content=[{"type": "text", "text": "description"}, {"type": "image", "url": "https://example.com/img.png"}], tool_call_id="t1"
         )
         assert _extract_text_from_message(msg) == "description"
 
@@ -2863,10 +1848,7 @@ class TestExtractTextFromMessage:
         assert _extract_text_from_message(msg) == "hello\nworld"
 
     def test_mixed_string_and_text_blocks(self):
-        msg = ToolMessage(
-            content=["plain string", {"type": "text", "text": "text block"}],
-            tool_call_id="t1",
-        )
+        msg = ToolMessage(content=["plain string", {"type": "text", "text": "text block"}], tool_call_id="t1")
         assert _extract_text_from_message(msg) == "plain string\ntext block"
 
 
@@ -2883,10 +1865,7 @@ class TestBuildEvictedContent:
 
     def test_text_and_image_preserves_image(self):
         image_block = {"type": "image", "url": "https://example.com/img.png"}
-        msg = ToolMessage(
-            content=[{"type": "text", "text": "big text"}, image_block],
-            tool_call_id="t1",
-        )
+        msg = ToolMessage(content=[{"type": "text", "text": "big text"}, image_block], tool_call_id="t1")
         result = _build_evicted_content(msg, "replacement")
         assert isinstance(result, list)
         assert len(result) == 2
@@ -2896,10 +1875,7 @@ class TestBuildEvictedContent:
     def test_multiple_non_text_blocks_preserved(self):
         img1 = {"type": "image", "url": "https://example.com/1.png"}
         img2 = {"type": "image", "url": "https://example.com/2.png"}
-        msg = ToolMessage(
-            content=[{"type": "text", "text": "big"}, img1, img2],
-            tool_call_id="t1",
-        )
+        msg = ToolMessage(content=[{"type": "text", "text": "big"}, img1, img2], tool_call_id="t1")
         result = _build_evicted_content(msg, "replacement")
         assert isinstance(result, list)
         assert len(result) == 3
@@ -2910,10 +1886,7 @@ class TestBuildEvictedContent:
 
 class TestPatchToolCallsMiddleware:
     def test_first_message(self) -> None:
-        input_messages = [
-            SystemMessage(content="You are a helpful assistant.", id="1"),
-            HumanMessage(content="Hello, how are you?", id="2"),
-        ]
+        input_messages = [SystemMessage(content="You are a helpful assistant.", id="1"), HumanMessage(content="Hello, how are you?", id="2")]
         middleware = PatchToolCallsMiddleware()
         state_update = middleware.before_agent({"messages": input_messages}, None)
         assert state_update is None
@@ -2987,11 +1960,7 @@ class TestPatchToolCallsMiddleware:
         middleware = PatchToolCallsMiddleware()
         first_update = middleware.before_agent({"messages": input_messages}, None)
         assert first_update is not None
-        second_state = {
-            "messages": input_messages,
-            "_patch_scan_cursor": len(input_messages),
-            "_patch_answered_tool_ids": ["123"],
-        }
+        second_state = {"messages": input_messages, "_patch_scan_cursor": len(input_messages), "_patch_answered_tool_ids": ["123"]}
         second_update = middleware.before_agent(second_state, None)
         assert second_update is None
 
@@ -3054,13 +2023,9 @@ class TestTruncation:
         assert result == items
 
     def test_truncate_list_result_with_truncation(self):
-        # Create a list that exceeds the token limit (20000 tokens * 4 chars = 80000 chars)
         large_items = [f"/very_long_file_path_{'x' * 100}_{i}.py" for i in range(1000)]
         result = truncate_if_too_long(large_items)
-
-        # Should be truncated
         assert len(result) < len(large_items)
-        # Last item should be the truncation message
         assert "results truncated" in result[-1]
         assert "try being more specific" in result[-1]
 
@@ -3070,13 +2035,9 @@ class TestTruncation:
         assert result == content
 
     def test_truncate_string_result_with_truncation(self):
-        # Create string that exceeds the token limit (20000 tokens * 4 chars = 80000 chars)
         large_content = "x" * 100000
         result = truncate_if_too_long(large_content)
-
-        # Should be truncated
         assert len(result) < len(large_content)
-        # Should end with truncation message
         assert "results truncated" in result
         assert "try being more specific" in result
 
@@ -3085,29 +2046,18 @@ class TestBuiltinTruncationTools:
     def test_builtin_truncation_tool_not_evicted(self):
         """Test that tools excluded from eviction (grep, ls, glob, etc.) are NOT evicted to filesystem."""
         backend, _ = _make_backend()
-        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)  # Very low limit
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
         runtime = _runtime("test_grep_123")
-
-        # Create a large tool result
         large_content = "x" * 5000
         expected_result = ToolMessage(content=large_content, tool_call_id="test_grep_123")
 
-        # Mock handler that returns the large result
-        def mock_handler(request):  # noqa: ARG001 - request required by handler interface
+        def mock_handler(_request):
             return expected_result
 
-        # Create a request for a tool in TOOLS_EXCLUDED_FROM_EVICTION
         request = ToolCallRequest(
-            runtime=runtime,
-            tool_call={"id": "test_grep_123", "name": "grep", "args": {"pattern": "test"}},
-            state={},
-            tool=None,
+            runtime=runtime, tool_call={"id": "test_grep_123", "name": "grep", "args": {"pattern": "test"}}, state={}, tool=None
         )
-
-        # Call wrap_tool_call
         result = middleware.wrap_tool_call(request, mock_handler)
-
-        # Result should NOT be intercepted - should be the original ToolMessage
         assert isinstance(result, ToolMessage)
         assert result == expected_result
         assert result.content == large_content
@@ -3115,29 +2065,18 @@ class TestBuiltinTruncationTools:
     def test_non_builtin_truncation_tool_evicted(self):
         """Test that tools NOT in TOOLS_EXCLUDED_FROM_EVICTION are evicted to filesystem."""
         backend, mem_store = _make_backend()
-        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)  # Very low limit
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
         runtime = _runtime("test_custom_123")
-
-        # Create a large tool result
         large_content = "y" * 5000
         large_result = ToolMessage(content=large_content, tool_call_id="test_custom_123")
 
-        # Mock handler that returns the large result
-        def mock_handler(request):  # noqa: ARG001 - request required by handler interface
+        def mock_handler(_request):
             return large_result
 
-        # Create a request for a tool NOT in TOOLS_EXCLUDED_FROM_EVICTION
         request = ToolCallRequest(
-            runtime=runtime,
-            tool_call={"id": "test_custom_123", "name": "custom_tool", "args": {"input": "test"}},
-            state={},
-            tool=None,
+            runtime=runtime, tool_call={"id": "test_custom_123", "name": "custom_tool", "args": {"input": "test"}}, state={}, tool=None
         )
-
-        # Call wrap_tool_call
         result = middleware.wrap_tool_call(request, mock_handler)
-
-        # Result SHOULD be intercepted - evicted file goes to store
         assert isinstance(result, ToolMessage)
         assert mem_store.get(("filesystem",), "/large_tool_results/test_custom_123") is not None
         assert "Tool result too large" in result.content
@@ -3145,37 +2084,22 @@ class TestBuiltinTruncationTools:
     def test_execute_tool_large_output_evicted(self) -> None:
         """Test that execute tool with large output gets evicted to filesystem."""
         backend, mem_store = _make_backend()
-        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)  # Low threshold
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_exec_123")
-
-        # Simulate large execute output (like a command that outputs many lines)
         large_execute_output = "x" * 10000
         large_execute_output += "\n[Command succeeded with exit code 0]"
-
-        # Create a ToolMessage with the large execute output
         large_result = ToolMessage(content=large_execute_output, tool_call_id="test_exec_123", name="execute")
 
-        # Mock handler that returns the large result
-        def mock_handler(request):  # noqa: ARG001 - request required by handler interface
+        def mock_handler(_request):
             return large_result
 
-        # Create a request for the execute tool
         request = ToolCallRequest(
-            runtime=runtime,
-            tool_call={"id": "test_exec_123", "name": "execute", "args": {"command": "echo large output"}},
-            state={},
-            tool=None,
+            runtime=runtime, tool_call={"id": "test_exec_123", "name": "execute", "args": {"command": "echo large output"}}, state={}, tool=None
         )
-
-        # Call wrap_tool_call - this is where eviction happens
         result = middleware.wrap_tool_call(request, mock_handler)
-
-        # Result SHOULD be intercepted - evicted file goes to store
         assert isinstance(result, ToolMessage)
         assert mem_store.get(("filesystem",), "/large_tool_results/test_exec_123") is not None
         assert "Tool result too large" in result.content
-
-        # Verify the message has the tool name preserved
         assert result.name == "execute"
 
     def test_execute_tool_forwards_zero_timeout_to_backend(self):
@@ -3192,21 +2116,11 @@ class TestBuiltinTruncationTools:
                 return "timeout-capture-sandbox"
 
         state = FilesystemState(messages=[], files={})
-        rt = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="test_zero_timeout",
-            store=InMemoryStore(),
-            stream_writer=lambda _: None,
-            config={},
-        )
-
+        rt = ToolRuntime(state=state, context=None, tool_call_id="test_zero_timeout", store=InMemoryStore(), stream_writer=lambda _: None, config={})
         backend = TimeoutCaptureSandbox()
         middleware = FilesystemMiddleware(backend=backend)
-
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = execute_tool.invoke({"command": "echo hello", "timeout": 0, "runtime": rt})
-
         assert isinstance(result, ToolMessage)
         assert "ok" in result.content
         assert captured_timeout["value"] == 0
@@ -3223,21 +2137,11 @@ class TestBuiltinTruncationTools:
                 return "timeout-capture-sandbox"
 
         state = FilesystemState(messages=[], files={})
-        rt = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="test_neg_timeout",
-            store=InMemoryStore(),
-            stream_writer=lambda _: None,
-            config={},
-        )
-
+        rt = ToolRuntime(state=state, context=None, tool_call_id="test_neg_timeout", store=InMemoryStore(), stream_writer=lambda _: None, config={})
         backend = TimeoutCaptureSandbox()
         middleware = FilesystemMiddleware(backend=backend)
-
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = execute_tool.invoke({"command": "echo hello", "timeout": -5, "runtime": rt})
-
         assert isinstance(result, ToolMessage)
         assert "error" in result.content.lower()
         assert "non-negative" in result.content.lower()
@@ -3256,21 +2160,11 @@ class TestBuiltinTruncationTools:
                 return "timeout-capture-sandbox"
 
         state = FilesystemState(messages=[], files={})
-        rt = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="test_fwd_timeout",
-            store=InMemoryStore(),
-            stream_writer=lambda _: None,
-            config={},
-        )
-
+        rt = ToolRuntime(state=state, context=None, tool_call_id="test_fwd_timeout", store=InMemoryStore(), stream_writer=lambda _: None, config={})
         backend = TimeoutCaptureSandbox()
         middleware = FilesystemMiddleware(backend=backend)
-
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         execute_tool.invoke({"command": "echo hello", "timeout": 300, "runtime": rt})
-
         assert captured_timeout["value"] == 300
 
     def test_execute_tool_rejects_timeout_exceeding_max(self):
@@ -3286,20 +2180,12 @@ class TestBuiltinTruncationTools:
 
         state = FilesystemState(messages=[], files={})
         rt = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="test_max_execute_timeout",
-            store=InMemoryStore(),
-            stream_writer=lambda _: None,
-            config={},
+            state=state, context=None, tool_call_id="test_max_execute_timeout", store=InMemoryStore(), stream_writer=lambda _: None, config={}
         )
-
         backend = TimeoutCaptureSandbox()
         middleware = FilesystemMiddleware(backend=backend, max_execute_timeout=600)
-
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = execute_tool.invoke({"command": "echo hello", "timeout": 601, "runtime": rt})
-
         assert isinstance(result, ToolMessage)
         assert "error" in result.content.lower()
         assert "601" in result.content
@@ -3320,20 +2206,12 @@ class TestBuiltinTruncationTools:
 
         state = FilesystemState(messages=[], files={})
         rt = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="test_at_max_execute_timeout",
-            store=InMemoryStore(),
-            stream_writer=lambda _: None,
-            config={},
+            state=state, context=None, tool_call_id="test_at_max_execute_timeout", store=InMemoryStore(), stream_writer=lambda _: None, config={}
         )
-
         backend = TimeoutCaptureSandbox()
         middleware = FilesystemMiddleware(backend=backend, max_execute_timeout=300)
-
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         execute_tool.invoke({"command": "echo hello", "timeout": 300, "runtime": rt})
-
         assert captured_timeout["value"] == 300
 
     def test_execute_tool_none_timeout_skips_max_check(self):
@@ -3350,29 +2228,17 @@ class TestBuiltinTruncationTools:
                 return "timeout-capture-sandbox"
 
         state = FilesystemState(messages=[], files={})
-        rt = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="test_none_timeout",
-            store=InMemoryStore(),
-            stream_writer=lambda _: None,
-            config={},
-        )
-
+        rt = ToolRuntime(state=state, context=None, tool_call_id="test_none_timeout", store=InMemoryStore(), stream_writer=lambda _: None, config={})
         backend = TimeoutCaptureSandbox()
         middleware = FilesystemMiddleware(backend=backend, max_execute_timeout=10)
-
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         execute_tool.invoke({"command": "echo hello", "runtime": rt})
-
-        # None should be forwarded without max_execute_timeout rejection
         assert captured_timeout["value"] is None
 
     def test_max_execute_timeout_init_validation(self):
         """FilesystemMiddleware should reject non-positive max_execute_timeout at init."""
         with pytest.raises(ValueError, match="max_execute_timeout must be positive"):
             FilesystemMiddleware(max_execute_timeout=0)
-
         with pytest.raises(ValueError, match="max_execute_timeout must be positive"):
             FilesystemMiddleware(max_execute_timeout=-1)
 

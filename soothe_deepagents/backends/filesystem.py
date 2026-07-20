@@ -12,7 +12,6 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from soothe_deepagents._api.deprecation import warn_deprecated
 from soothe_deepagents.backends.edit_locks import FileEditLockRegistry
 from soothe_deepagents.backends.fs_safety import (
     compute_version_stamp,
@@ -136,7 +135,7 @@ class FilesystemBackend(BackendProtocol):
     def __init__(
         self,
         root_dir: str | Path | None = None,
-        virtual_mode: bool | None = None,  # noqa: FBT001
+        virtual_mode: bool = True,  # noqa: FBT001, FBT002
         max_file_size_mb: int = 10,
         *,
         backup_dir: str | Path = ".backups",
@@ -177,24 +176,6 @@ class FilesystemBackend(BackendProtocol):
                 when `backup=True` on write/edit/delete.
         """
         self.cwd = Path(root_dir).resolve() if root_dir else Path.cwd()
-        if virtual_mode is None:
-            warn_deprecated(
-                since="0.5.0",
-                removal="0.6.0",
-                message=(
-                    "`FilesystemBackend` `virtual_mode` default will change "
-                    "in soothe_deepagents==0.6.0; please specify `virtual_mode` "
-                    "explicitly. Note: `virtual_mode` is for virtual path "
-                    "semantics (e.g., `CompositeBackend` routing) and "
-                    "optional path-based guardrails; it does not provide "
-                    "sandboxing or process isolation. Security note: leaving "
-                    "`virtual_mode=False` allows absolute paths and `'..'` "
-                    "to bypass `root_dir`. Consult the API reference for "
-                    "details."
-                ),
-                package="soothe_deepagents",
-            )
-            virtual_mode = False
         self.virtual_mode = virtual_mode
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
         self._backup_dir = Path(backup_dir)

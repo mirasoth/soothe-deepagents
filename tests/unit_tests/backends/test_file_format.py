@@ -3,7 +3,7 @@
 Covers:
 - Text round-trip through create_file_data / file_data_to_string
 - Binary (base64) round-trip
-- Legacy list[str] backwards compatibility (with DeprecationWarning)
+- Legacy list[str] content raises TypeError
 - Store backend upload/download for binary and text
 - Store backend legacy read
 - Grep with new and legacy formats
@@ -11,11 +11,10 @@ Covers:
 """
 
 import base64
-import warnings
 
+import pytest
 from langgraph.store.memory import InMemoryStore
 
-from soothe_deepagents.backends.protocol import ReadResult
 from soothe_deepagents.backends.store import StoreBackend
 from soothe_deepagents.backends.utils import (
     _to_legacy_file_data,
@@ -25,15 +24,12 @@ from soothe_deepagents.backends.utils import (
     grep_matches_from_files,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
-NS = lambda _rt: ("filesystem",)  # noqa: E731
+def _ns(_rt: object) -> tuple[str, ...]:
+    return ("filesystem",)
 
-# ---------------------------------------------------------------------------
-# 1. Text round-trip
-# ---------------------------------------------------------------------------
+
+NS = _ns
 
 
 def test_text_round_trip():
@@ -42,11 +38,6 @@ def test_text_round_trip():
     assert fd["content"] == "hello\nworld"
     assert fd["encoding"] == "utf-8"
     assert file_data_to_string(fd) == "hello\nworld"
-
-
-# ---------------------------------------------------------------------------
-# 2. Binary round-trip
-# ---------------------------------------------------------------------------
 
 
 def test_binary_round_trip():
@@ -58,118 +49,62 @@ def test_binary_round_trip():
     assert base64.standard_b64decode(fd["content"]) == original
 
 
-# ---------------------------------------------------------------------------
-# 3. Legacy backwards compat — emits DeprecationWarning
-# ---------------------------------------------------------------------------
-
-
-def test_legacy_list_content_emits_warning():
+def test_legacy_list_content_raises_type_error():
     legacy_fd = {
         "content": ["line1", "line2"],
         "encoding": "utf-8",
         "created_at": "2025-01-01T00:00:00+00:00",
         "modified_at": "2025-01-01T00:00:00+00:00",
     }
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = file_data_to_string(legacy_fd)
-        assert result == "line1\nline2"
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
-        assert "list[str]" in str(w[0].message)
-
-
-# ---------------------------------------------------------------------------
-# 4. New format — no warning
-# ---------------------------------------------------------------------------
+    with pytest.raises(TypeError, match="list\\[str\\]"):
+        file_data_to_string(legacy_fd)
 
 
 def test_new_format_no_warning():
-    fd = {
-        "content": "hello",
-        "encoding": "utf-8",
-        "created_at": "2025-01-01T00:00:00+00:00",
-        "modified_at": "2025-01-01T00:00:00+00:00",
-    }
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = file_data_to_string(fd)
-        assert result == "hello"
-        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecation_warnings) == 0
-
-
-# ---------------------------------------------------------------------------
-# 5. Store backend upload binary
-# ---------------------------------------------------------------------------
+    fd = {"content": "hello", "encoding": "utf-8", "created_at": "2025-01-01T00:00:00+00:00", "modified_at": "2025-01-01T00:00:00+00:00"}
+    assert file_data_to_string(fd) == "hello"
 
 
 def test_store_upload_binary():
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=NS, file_format="v2")
-
     png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
     responses = be.upload_files([("/images/test.png", png_bytes)])
-
     assert len(responses) == 1
     assert responses[0].error is None
-
-    # Verify stored with base64 encoding
     item = mem_store.get(("filesystem",), "/images/test.png")
     assert item is not None
     assert item.value["encoding"] == "base64"
     assert isinstance(item.value["content"], str)
 
 
-# ---------------------------------------------------------------------------
-# 6. Store backend download binary round-trip
-# ---------------------------------------------------------------------------
-
-
 def test_store_upload_download_binary_round_trip():
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=NS, file_format="v2")
-
     original_bytes = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
     be.upload_files([("/images/photo.png", original_bytes)])
-
     responses = be.download_files(["/images/photo.png"])
     assert len(responses) == 1
     assert responses[0].error is None
     assert responses[0].content == original_bytes
 
 
-# ---------------------------------------------------------------------------
-# 7. Store backend upload text
-# ---------------------------------------------------------------------------
-
-
 def test_store_upload_text():
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=NS, file_format="v2")
-
     text_bytes = b"Hello, world!\nLine 2"
     responses = be.upload_files([("/docs/readme.txt", text_bytes)])
-
     assert len(responses) == 1
     assert responses[0].error is None
-
     item = mem_store.get(("filesystem",), "/docs/readme.txt")
     assert item is not None
     assert item.value["encoding"] == "utf-8"
     assert item.value["content"] == "Hello, world!\nLine 2"
 
 
-# ---------------------------------------------------------------------------
-# 8. Store backend legacy read
-# ---------------------------------------------------------------------------
-
-
-def test_store_legacy_list_content_read():
+def test_store_legacy_list_content_read_raises_type_error():
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=NS)
-
-    # Manually put legacy list[str] item
     mem_store.put(
         ("filesystem",),
         "/legacy/file.txt",
@@ -180,40 +115,16 @@ def test_store_legacy_list_content_read():
             "modified_at": "2025-01-01T00:00:00+00:00",
         },
     )
-
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = be.read("/legacy/file.txt")
-        assert isinstance(result, ReadResult)
-        assert result.file_data is not None
-        assert "line1" in result.file_data["content"]
-        assert "line2" in result.file_data["content"]
-        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecation_warnings) >= 1
-
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        responses = be.download_files(["/legacy/file.txt"])
-        assert responses[0].content == b"line1\nline2\nline3"
-        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecation_warnings) >= 1
+    with pytest.raises(TypeError, match="list\\[str\\]"):
+        be.read("/legacy/file.txt")
+    with pytest.raises(TypeError, match="list\\[str\\]"):
+        be.download_files(["/legacy/file.txt"])
 
 
-# ---------------------------------------------------------------------------
-# 9. Store backend legacy read (v1 format, replaces StateBackend test)
-# ---------------------------------------------------------------------------
-
-
-def test_store_legacy_list_content_read_v1():
-    """Test reading legacy list[str] content through StoreBackend (v1 format).
-
-    This replaces the former StateBackend legacy read test, exercising the
-    same file_data_to_string deserialization path via StoreBackend.
-    """
+def test_store_legacy_list_content_read_v1_raises_type_error():
+    """Reading legacy list[str] content through StoreBackend (v1 format) raises TypeError."""
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=NS, file_format="v1")
-
-    # Seed store with legacy list[str] content
     mem_store.put(
         ("filesystem",),
         "/old/file.txt",
@@ -224,28 +135,10 @@ def test_store_legacy_list_content_read_v1():
             "modified_at": "2025-01-01T00:00:00+00:00",
         },
     )
-
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = be.read("/old/file.txt")
-        assert isinstance(result, ReadResult)
-        assert result.file_data is not None
-        assert "alpha" in result.file_data["content"]
-        assert "beta" in result.file_data["content"]
-        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecation_warnings) >= 1
-
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        responses = be.download_files(["/old/file.txt"])
-        assert responses[0].content == b"alpha\nbeta"
-        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecation_warnings) >= 1
-
-
-# ---------------------------------------------------------------------------
-# 10. Grep with new format
-# ---------------------------------------------------------------------------
+    with pytest.raises(TypeError, match="list\\[str\\]"):
+        be.read("/old/file.txt")
+    with pytest.raises(TypeError, match="list\\[str\\]"):
+        be.download_files(["/old/file.txt"])
 
 
 def test_grep_new_format():
@@ -260,17 +153,9 @@ def test_grep_new_format():
     assert result.matches[1]["text"] == "import sys"
 
 
-# ---------------------------------------------------------------------------
-# 11. Grep with legacy format
-# ---------------------------------------------------------------------------
-
-
 def test_grep_glob_filters_by_filename():
     """`grep_matches_from_files` honors the glob filter (cached compile path)."""
-    files = {
-        "/src/main.py": create_file_data("import os"),
-        "/src/notes.txt": create_file_data("import os"),
-    }
+    files = {"/src/main.py": create_file_data("import os"), "/src/notes.txt": create_file_data("import os")}
     result = grep_matches_from_files(files, "import", path="/", glob="*.py")
     assert result.matches is not None
     assert len(result.matches) == 1
@@ -279,11 +164,7 @@ def test_grep_glob_filters_by_filename():
 
 def test_grep_glob_brace_expansion():
     """Brace-expansion globs match either extension via the cached matcher."""
-    files = {
-        "/a.py": create_file_data("hit"),
-        "/b.md": create_file_data("hit"),
-        "/c.txt": create_file_data("hit"),
-    }
+    files = {"/a.py": create_file_data("hit"), "/b.md": create_file_data("hit"), "/c.txt": create_file_data("hit")}
     result = grep_matches_from_files(files, "hit", path="/", glob="*.{py,md}")
     paths = sorted(m["path"] for m in result.matches)
     assert paths == ["/a.py", "/b.md"]
@@ -291,10 +172,7 @@ def test_grep_glob_brace_expansion():
 
 def test_grep_glob_matches_nothing():
     """A glob matching no files yields an empty (not `None`) match list."""
-    files = {
-        "/a.py": create_file_data("hit"),
-        "/b.md": create_file_data("hit"),
-    }
+    files = {"/a.py": create_file_data("hit"), "/b.md": create_file_data("hit")}
     result = grep_matches_from_files(files, "hit", path="/", glob="*.rs")
     assert result.matches == []
 
@@ -306,7 +184,6 @@ def test_compile_glob_is_cached():
     is reused across calls rather than recompiled per candidate file.
     """
     assert compile_grep_include_glob("*.py") is compile_grep_include_glob("*.py")
-    # A distinct pattern produces a distinct matcher.
     assert compile_grep_include_glob("*.py") is not compile_grep_include_glob("*.md")
 
 
@@ -324,7 +201,7 @@ def test_grep_glob_repeated_pattern_stays_correct():
     assert [m["path"] for m in r2.matches] == ["/y.py"]
 
 
-def test_grep_legacy_format():
+def test_grep_legacy_format_raises_type_error():
     legacy_fd = {
         "content": ["def foo():", "    return 42", "def bar():", "    return 0"],
         "encoding": "utf-8",
@@ -332,29 +209,15 @@ def test_grep_legacy_format():
         "modified_at": "2025-01-01T00:00:00+00:00",
     }
     files = {"/src/funcs.py": legacy_fd}
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = grep_matches_from_files(files, "def", path="/")
-        assert result.matches is not None
-        assert len(result.matches) == 2
-        assert result.matches[0]["text"] == "def foo():"
-        assert result.matches[1]["text"] == "def bar():"
-        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecation_warnings) >= 1
-
-
-# ---------------------------------------------------------------------------
-# 12. Encoding inference — utf-8 attempt, fallback to base64
-# ---------------------------------------------------------------------------
+    with pytest.raises(TypeError, match="list\\[str\\]"):
+        grep_matches_from_files(files, "def", path="/")
 
 
 def test_store_upload_utf8_content_stored_as_text():
     """Valid utf-8 bytes are stored with encoding='utf-8'."""
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=NS, file_format="v2")
-
     be.upload_files([("/docs/notes.txt", b"Hello, world!")])
-
     item = mem_store.get(("filesystem",), "/docs/notes.txt")
     assert item.value["encoding"] == "utf-8"
     assert item.value["content"] == "Hello, world!"
@@ -364,94 +227,68 @@ def test_store_upload_non_utf8_content_stored_as_base64():
     """Non-utf-8 bytes are stored with encoding='base64'."""
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=NS, file_format="v2")
-
     raw = b"\x89PNG\r\n\x1a\n" + b"\xff\xfe" + b"\x00" * 20
     be.upload_files([("/images/photo.png", raw)])
-
     item = mem_store.get(("filesystem",), "/images/photo.png")
     assert item.value["encoding"] == "base64"
     assert base64.standard_b64decode(item.value["content"]) == raw
 
 
-# ---------------------------------------------------------------------------
-# 13. file_format="v1" flag — StoreBackend
-# ---------------------------------------------------------------------------
-
-
-def test_store_write_as_list():
-    """StoreBackend with file_format="v1" stores content as list[str]."""
+def test_store_write_v1_stores_plain_str():
+    """StoreBackend with file_format='v1' stores content as plain str."""
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=NS, file_format="v1")
-
     be.write("/docs/readme.txt", "line1\nline2\nline3")
 
     item = mem_store.get(("filesystem",), "/docs/readme.txt")
     assert item is not None
-    assert item.value["content"] == ["line1", "line2", "line3"]
+    assert item.value["content"] == "line1\nline2\nline3"
     assert "encoding" not in item.value
 
 
-def test_store_edit_as_list():
-    """StoreBackend with file_format="v1" preserves list format after edit."""
+def test_store_edit_v1_round_trip():
+    """Editing v1 plain str content works normally."""
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=NS, file_format="v1")
-
     be.write("/docs/readme.txt", "hello\nworld")
-    result = be.edit("/docs/readme.txt", "world", "there")
 
-    assert result.error is None
-    item = mem_store.get(("filesystem",), "/docs/readme.txt")
-    assert item.value["content"] == ["hello", "there"]
-    assert "encoding" not in item.value
+    edit_result = be.edit("/docs/readme.txt", "world", "there")
+    assert edit_result.error is None
+
+    read_result = be.read("/docs/readme.txt")
+    assert read_result.error is None
+    assert read_result.file_data is not None
+    assert read_result.file_data["content"] == "hello\nthere"
 
 
-def test_store_write_as_list_readable():
-    """Files stored as list[str] are still readable via the same backend."""
+def test_store_write_v1_readable():
+    """Files stored in v1 format can be read back as plain str."""
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=NS, file_format="v1")
-
     be.write("/file.txt", "aaa\nbbb")
-    result = be.read("/file.txt")
-    assert isinstance(result, ReadResult)
-    assert result.file_data is not None
-    assert "aaa" in result.file_data["content"]
-    assert "bbb" in result.file_data["content"]
+
+    read_result = be.read("/file.txt")
+    assert read_result.error is None
+    assert read_result.file_data is not None
+    assert read_result.file_data["content"] == "aaa\nbbb"
 
 
-# ---------------------------------------------------------------------------
-# 14. file_format="v1" flag — StoreBackend (replaces StateBackend tests)
-# ---------------------------------------------------------------------------
-
-
-def test_store_write_as_list_v1():
-    """StoreBackend with file_format="v1" stores content as list[str].
-
-    This replaces the former StateBackend v1 write test.
-    """
+def test_store_write_v1():
+    """StoreBackend with file_format='v1' stores plain str content."""
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=NS, file_format="v1")
-
     result = be.write("/docs/readme.txt", "alpha\nbeta")
     assert result.error is None
     item = mem_store.get(("filesystem",), "/docs/readme.txt")
-    assert item.value["content"] == ["alpha", "beta"]
+    assert item.value["content"] == "alpha\nbeta"
     assert "encoding" not in item.value
 
 
-def test_store_edit_as_list_v1():
-    """StoreBackend with file_format="v1" preserves list format after edit.
-
-    This replaces the former StateBackend v1 edit test.
-    """
+def test_store_edit_as_list_v1_raises_type_error():
+    """Editing seeded v1 list[str] content raises TypeError."""
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=NS, file_format="v1")
-
-    # Seed with legacy content
     legacy = _to_legacy_file_data(create_file_data("hello\nworld"))
     mem_store.put(("filesystem",), "/file.txt", legacy)
-
-    result = be.edit("/file.txt", "world", "there")
-    assert result.error is None
-    item = mem_store.get(("filesystem",), "/file.txt")
-    assert item.value["content"] == ["hello", "there"]
-    assert "encoding" not in item.value
+    with pytest.raises(TypeError, match="list\\[str\\]"):
+        be.edit("/file.txt", "world", "there")

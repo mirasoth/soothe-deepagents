@@ -25,7 +25,7 @@ from langgraph.types import Command
 from langsmith.run_helpers import get_tracing_context, tracing_context
 from pydantic import BaseModel, Field
 
-from soothe_deepagents.backends.protocol import BackendFactory, BackendProtocol
+from soothe_deepagents.backends.protocol import BackendProtocol
 from soothe_deepagents.middleware._utils import append_to_system_message
 from soothe_deepagents.middleware.filesystem import FilesystemPermission
 
@@ -819,7 +819,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     def __init__(
         self,
         *,
-        backend: BackendProtocol | BackendFactory,
+        backend: BackendProtocol,
         subagents: Sequence[SubAgent | CompiledSubAgent],
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
         task_description: str | None = None,

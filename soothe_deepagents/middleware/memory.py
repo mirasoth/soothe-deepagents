@@ -64,7 +64,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
 
-    from soothe_deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+    from soothe_deepagents.backends.protocol import BackendProtocol
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -75,11 +75,9 @@ from langchain.agents.middleware.types import (
     PrivateStateAttr,
     ResponseT,
 )
-from langchain.tools import ToolRuntime
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import ContentBlock, SystemMessage
 
-from soothe_deepagents.backends.protocol import _resolve_backend
 from soothe_deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
@@ -190,7 +188,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
     def __init__(
         self,
         *,
-        backend: BACKEND_TYPES,
+        backend: BackendProtocol,
         sources: list[str],
         add_cache_control: bool = False,
         system_prompt: str | None = MEMORY_SYSTEM_PROMPT,
@@ -198,10 +196,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         """Initialize the memory middleware.
 
         Args:
-            backend: Backend instance or factory function that takes runtime
-                and returns a backend.
-
-                Use a factory for StateBackend.
+            backend: Backend instance for loading memory files.
             sources: List of memory file paths to load (e.g., `["~/.soothe_deepagents/AGENTS.md",
                 "./.soothe_deepagents/AGENTS.md"]`).
 
@@ -245,27 +240,17 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         self._formatted_memory_cache_value: str | None = None
 
     def _get_backend(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
-        """Resolve backend from instance or factory.
+        """Return the configured backend instance.
 
         Args:
-            state: Current agent state.
-            runtime: Runtime context for factory functions.
-            config: Runnable config to pass to backend factory.
+            state: Current agent state (unused).
+            runtime: Runtime context (unused).
+            config: Runnable config (unused).
 
         Returns:
-            Resolved backend instance.
+            Configured backend instance.
         """
-        if callable(self._backend):
-            # Construct an artificial tool runtime to resolve backend factory
-            tool_runtime = ToolRuntime(
-                state=state,
-                context=runtime.context,
-                stream_writer=runtime.stream_writer,
-                store=runtime.store,
-                config=config,
-                tool_call_id=None,
-            )
-            return _resolve_backend(self._backend, tool_runtime)
+        _ = state, runtime, config
         return self._backend
 
     def _format_agent_memory(self, contents: dict[str, str], template: str = MEMORY_SYSTEM_PROMPT) -> str:
