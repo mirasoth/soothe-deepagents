@@ -82,9 +82,11 @@ from langchain.agents.middleware.summarization import (
     TokenCounter,
 )
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
+from langchain.tools import ToolRuntime
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolCall, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
+from langchain_core.tools import BaseTool
 from langgraph.config import get_config
 from langgraph.types import Command
 from pydantic import BaseModel
@@ -118,8 +120,6 @@ if TYPE_CHECKING:
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain.chat_models import BaseChatModel
-    from langchain.tools import ToolRuntime
-    from langchain_core.tools import BaseTool
     from langgraph.runtime import Runtime
 
     from soothe_deepagents.backends.protocol import BackendProtocol, FileUploadResponse

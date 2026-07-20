@@ -1,6 +1,6 @@
 [project]
 name = "soothe-deepagents"
-version = "0.8.0"
+version = "0.8.1"
 
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"

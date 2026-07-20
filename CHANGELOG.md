@@ -2,6 +2,11 @@
 
 # Deep Agents Changelog
 
+## [0.8.1] - 2026-07-21
+
+### Fixed
+- Import `ToolRuntime` / `BaseTool` at runtime so `compact_conversation` tool creation succeeds
+
 ## [0.8.0] - 2026-07-21
 
 ### Changed
