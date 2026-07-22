@@ -2,6 +2,13 @@
 
 # Deep Agents Changelog
 
+## [0.8.2] - 2026-07-22
+
+### Added
+- `FilesystemMiddleware` binds runtime `workspace` via duck-typed `backend.bind_workspace(...)`
+- General-purpose subagent inherits parent middleware with `propagate_to_general_purpose=True`
+- `task` invoke config forwards parent `workspace` / `thread_id` for nested filesystem tools
+
 ## [0.8.1] - 2026-07-21
 
 ### Fixed
