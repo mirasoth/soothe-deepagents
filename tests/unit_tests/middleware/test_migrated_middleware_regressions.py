@@ -1,4 +1,4 @@
-"""Regression tests migrated from Soothe middleware suite."""
+"""Regression tests for reliability middleware."""
 
 from __future__ import annotations
 
