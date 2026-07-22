@@ -1689,16 +1689,50 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         return system_prompt
 
     def _get_backend(self, runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
-        """Return the configured backend instance.
+        """Return the configured backend, binding workspace from tool runtime when supported.
 
         Args:
-            runtime: The tool runtime context (unused; kept for call-site compat).
+            runtime: The tool runtime context (workspace from config/state).
 
         Returns:
             Configured backend instance.
         """
-        _ = runtime
+        self._bind_runtime_workspace(runtime)
         return self.backend
+
+    @staticmethod
+    def _workspace_from_runtime(runtime: ToolRuntime[Any, Any]) -> str | None:
+        """Extract workspace path from tool runtime config or state (no host config)."""
+        config = getattr(runtime, "config", None)
+        if isinstance(config, dict):
+            configurable = config.get("configurable")
+            if isinstance(configurable, dict):
+                workspace = configurable.get("workspace")
+                if isinstance(workspace, str) and workspace.strip():
+                    return workspace.strip()
+                if workspace is not None:
+                    text = str(workspace).strip()
+                    if text:
+                        return text
+        state = getattr(runtime, "state", None)
+        if isinstance(state, dict):
+            workspace = state.get("workspace")
+            if isinstance(workspace, str) and workspace.strip():
+                return workspace.strip()
+            if workspace is not None:
+                text = str(workspace).strip()
+                if text:
+                    return text
+        return None
+
+    def _bind_runtime_workspace(self, runtime: ToolRuntime[Any, Any]) -> None:
+        """Duck-type bind: backends may implement ``bind_workspace(path)``."""
+        workspace = self._workspace_from_runtime(runtime)
+        if workspace is None:
+            return
+        binder = getattr(self.backend, "bind_workspace", None)
+        if callable(binder):
+            binder(workspace)
 
     @staticmethod
     def _normalize_entry_path(path: str) -> str:

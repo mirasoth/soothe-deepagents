@@ -2608,6 +2608,25 @@ class TestSubagentMiddlewareIsolation:
         gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
         assert not any(m is custom for m in gp_spec["middleware"])
 
+    def test_gp_inherits_middleware_with_propagate_flag(self) -> None:
+        """GP inherits parent middleware that sets ``propagate_to_general_purpose``."""
+
+        class _PropagatingMW(AgentMiddleware):
+            name = "PropagatingCustomMW"
+            propagate_to_general_purpose = True
+
+        class _NonPropagatingMW(AgentMiddleware):
+            name = "NonPropagatingCustomMW"
+            propagate_to_general_purpose = False
+
+        propagating = _PropagatingMW()
+        non_propagating = _NonPropagatingMW()
+        _, sub_mw = self._setup([propagating, non_propagating], enable_gp=True)
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        names = {getattr(m, "name", type(m).__name__) for m in gp_spec["middleware"]}
+        assert "PropagatingCustomMW" in names
+        assert "NonPropagatingCustomMW" not in names
+
     def test_gp_profile_exclusion_wins_over_inherited_override(self) -> None:
         """Profile exclusion on a GP default slot wins even when the main agent supplies a replacement."""
         custom = SummarizationMiddleware(

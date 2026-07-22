@@ -697,6 +697,28 @@ def _build_task_tool(  # noqa: C901, PLR0915
                 subagent_state["workspace"] = workspace
         return subagent, subagent_state
 
+    def _subagent_invoke_config(runtime: ToolRuntime) -> RunnableConfig:
+        """Build invoke config: identity + parent workspace/thread keys for FS tools."""
+        # Keep subagent identity stable while forwarding callbacks and workspace
+        # binding keys so nested filesystem tools resolve the parent project root
+        # (not the process ephemeral default).
+        configurable: dict[str, Any] = {"ls_agent_type": "subagent"}
+        parent_cfg = runtime.config if isinstance(runtime.config, dict) else {}
+        parent_configurable = parent_cfg.get("configurable")
+        if isinstance(parent_configurable, dict):
+            for key in ("workspace", "thread_id"):
+                if key in parent_configurable and parent_configurable[key] is not None:
+                    configurable[key] = parent_configurable[key]
+        if "workspace" not in configurable:
+            state_workspace = runtime.state.get("workspace") if isinstance(runtime.state, dict) else None
+            if state_workspace is not None:
+                configurable["workspace"] = state_workspace
+        subagent_config: RunnableConfig = {"configurable": configurable}
+        callbacks = parent_cfg.get("callbacks")
+        if callbacks is not None:
+            subagent_config["callbacks"] = callbacks
+        return subagent_config
+
     def task(
         description: str,
         subagent_type: str,
@@ -713,12 +735,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             description,
             runtime,
         )
-        # Keep subagent identity config stable while forwarding callbacks from the
-        # parent invoke config so callback handlers observe subagent model calls.
-        subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
-        callbacks = runtime.config.get("callbacks") if isinstance(runtime.config, dict) else None
-        if callbacks is not None:
-            subagent_config["callbacks"] = callbacks
+        subagent_config = _subagent_invoke_config(runtime)
         with _subagent_tracing_context():
             result = subagent.invoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
@@ -739,12 +756,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             description,
             runtime,
         )
-        # Keep subagent identity config stable while forwarding callbacks from the
-        # parent invoke config so callback handlers observe subagent model calls.
-        subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
-        callbacks = runtime.config.get("callbacks") if isinstance(runtime.config, dict) else None
-        if callbacks is not None:
-            subagent_config["callbacks"] = callbacks
+        subagent_config = _subagent_invoke_config(runtime)
         with _subagent_tracing_context():
             result = await subagent.ainvoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)

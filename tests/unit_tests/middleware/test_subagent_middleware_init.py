@@ -508,8 +508,9 @@ class TestSubagentMiddlewareInit:
         assert agent is not None
 
     def test_task_tool_injects_workspace_from_runtime_config(self) -> None:
-        """Task tool should pass configurable.workspace through subagent state."""
+        """Task tool should pass configurable.workspace through subagent state and invoke config."""
         captured_state: dict[str, Any] = {}
+        captured_config: dict[str, Any] = {}
 
         class _Runnable:
             def with_config(self, _config: dict[str, object]) -> "_Runnable":
@@ -520,9 +521,11 @@ class TestSubagentMiddlewareInit:
                 state: dict[str, object],
                 config: object = None,
             ) -> dict[str, object]:
-                del config
                 captured_state.clear()
                 captured_state.update(state)
+                captured_config.clear()
+                if isinstance(config, dict):
+                    captured_config.update(config)
                 return {"messages": [AIMessage(content="done")]}
 
         middleware = SubAgentMiddleware(
@@ -539,7 +542,7 @@ class TestSubagentMiddlewareInit:
         runtime = ToolRuntime(
             state={},
             context={},
-            config={"configurable": {"workspace": "/workspace-a"}},
+            config={"configurable": {"workspace": "/workspace-a", "thread_id": "t-parent"}},
             stream_writer=lambda _chunk: None,
             tools=[task_tool],
             tool_call_id="call_worker",
@@ -553,6 +556,11 @@ class TestSubagentMiddlewareInit:
         )
 
         assert captured_state.get("workspace") == "/workspace-a"
+        configurable = captured_config.get("configurable")
+        assert isinstance(configurable, dict)
+        assert configurable.get("workspace") == "/workspace-a"
+        assert configurable.get("thread_id") == "t-parent"
+        assert configurable.get("ls_agent_type") == "subagent"
 
     def test_task_tool_excludes_parent_owned_state_keys_from_merge(self) -> None:
         """Parent-owned state keys should not be merged back from subagent output."""

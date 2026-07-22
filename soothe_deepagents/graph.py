@@ -976,9 +976,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             matched_classes=_main_matched_classes,
             matched_names=_main_matched_names,
         )
-        # Inherit only middleware that overrides a default GP slot (including excluded
-        # ones) without carrying over middleware that's specific to the main agent.
-        _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_original_name_to_index]
+        # Inherit middleware that overrides a default GP slot, plus any parent
+        # middleware that opts in via ``propagate_to_general_purpose=True``.
+        _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_original_name_to_index or getattr(m, "propagate_to_general_purpose", False)]
         gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable)
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
