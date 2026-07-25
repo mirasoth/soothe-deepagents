@@ -2,6 +2,13 @@
 
 # Deep Agents Changelog
 
+## [0.8.3] - 2026-07-25
+
+### Added
+- `FilesystemBackend.glob` uses optional `fd`/`fdfind` with `os.scandir` Python fallback (same pattern as `rg` for grep)
+- Directory glob support: trailing `/` for dirs-only; `include_dirs=True` for files+dirs; helpers in `backends.glob_search`
+- `backends.grep_search`: `ripgrep_search` / `python_search` plus `get_rg_bin` / `is_rg_available` / `reset_rg_bin_cache` (`DEEPAGENTS_RG_PATH` / `SOOTHE_RG_PATH`); `FilesystemBackend` re-exports probes and thin-wraps the helpers
+
 ## [0.8.2] - 2026-07-22
 
 ### Added

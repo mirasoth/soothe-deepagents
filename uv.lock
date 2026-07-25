@@ -2130,6 +2130,7 @@ wheels = [
 
 [[package]]
 name = "soothe-deepagents"
+version = "0.8.3"
 source = { editable = "." }
 dependencies = [
     { name = "langchain" },

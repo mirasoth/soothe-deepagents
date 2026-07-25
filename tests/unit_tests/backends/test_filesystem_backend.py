@@ -11,8 +11,9 @@ import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 
-from soothe_deepagents.backends import filesystem as fs_module
+from soothe_deepagents.backends import filesystem as fs_module, grep_search as grep_module
 from soothe_deepagents.backends.filesystem import FilesystemBackend
+from soothe_deepagents.backends.grep_search import reset_rg_bin_cache
 from soothe_deepagents.backends.protocol import DeleteResult, EditResult, ReadResult, WriteResult
 from soothe_deepagents.middleware.filesystem import GLOB_TIMEOUT, FilesystemMiddleware
 
@@ -791,9 +792,9 @@ _RG_MISSING_PREFIX = "ripgrep ('rg') not found on PATH"
 @pytest.fixture
 def _isolate_rg_cache() -> Iterator[None]:
     """Clear the process-wide `rg` resolver cache around each test that touches it."""
-    fs_module._resolve_ripgrep_path.cache_clear()
+    reset_rg_bin_cache()
     yield
-    fs_module._resolve_ripgrep_path.cache_clear()
+    reset_rg_bin_cache()
 
 
 class _FakeProc:
@@ -810,12 +811,12 @@ def test_resolve_ripgrep_logs_once_when_missing(tmp_path: Path, monkeypatch: pyt
     Operators investigating slow searches need at least one signal that the
     Python fallback is in play.
     """
-    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(grep_module.shutil, "which", lambda _name: None)
 
     (tmp_path / "a.txt").write_text("hello\n")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
-    with caplog.at_level(logging.INFO, logger=fs_module.logger.name):
+    with caplog.at_level(logging.INFO, logger=grep_module.logger.name):
         be.grep("hello", path=str(tmp_path))
         be.grep("hello", path=str(tmp_path))  # second call must not re-log
 
@@ -827,7 +828,7 @@ def test_resolve_ripgrep_logs_once_when_missing(tmp_path: Path, monkeypatch: pyt
 def test_resolve_ripgrep_uses_resolved_path_in_argv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The cached absolute path is exec'd verbatim, alongside the expected flags."""
     fake_rg = "/opt/fake/bin/rg"
-    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: fake_rg)
+    monkeypatch.setattr(grep_module.shutil, "which", lambda _name: fake_rg)
 
     captured: dict[str, list[str]] = {}
 
@@ -835,7 +836,7 @@ def test_resolve_ripgrep_uses_resolved_path_in_argv(tmp_path: Path, monkeypatch:
         captured["cmd"] = cmd
         return _FakeProc()
 
-    monkeypatch.setattr(fs_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(grep_module.subprocess, "run", fake_run)
 
     (tmp_path / "a.txt").write_text("hello\n")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
@@ -851,17 +852,17 @@ def test_resolve_ripgrep_uses_resolved_path_in_argv(tmp_path: Path, monkeypatch:
 @pytest.mark.usefixtures("_isolate_rg_cache")
 def test_ripgrep_timeout_logs_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     """A `TimeoutExpired` from `subprocess.run` should emit a `WARNING`."""
-    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(grep_module.shutil, "which", lambda _name: "/usr/bin/rg")
 
     def timeout_run(cmd: list[str], **_kwargs: object) -> object:
         raise subprocess.TimeoutExpired(cmd, timeout=30)
 
-    monkeypatch.setattr(fs_module.subprocess, "run", timeout_run)
+    monkeypatch.setattr(grep_module.subprocess, "run", timeout_run)
 
     (tmp_path / "a.txt").write_text("hello\n")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
-    with caplog.at_level(logging.WARNING, logger=fs_module.logger.name):
+    with caplog.at_level(logging.WARNING, logger=grep_module.logger.name):
         result = be.grep("hello", path=str(tmp_path))
 
     assert any("timed out" in r.getMessage() for r in caplog.records), [r.getMessage() for r in caplog.records]
@@ -874,7 +875,7 @@ def test_ripgrep_timeout_logs_warning(tmp_path: Path, monkeypatch: pytest.Monkey
 @pytest.mark.usefixtures("_isolate_rg_cache")
 def test_ripgrep_timeout_returns_partial_results_when_output_captured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When ripgrep times out after emitting matches, those partial matches are returned flagged as truncated."""
-    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(grep_module.shutil, "which", lambda _name: "/usr/bin/rg")
     (tmp_path / "a.txt").write_text("hello\n")
     frame = json.dumps({"type": "match", "data": {"path": {"text": "a.txt"}, "lines": {"text": "hello\n"}, "line_number": 1}})
 
@@ -883,7 +884,7 @@ def test_ripgrep_timeout_returns_partial_results_when_output_captured(tmp_path: 
         # before the kill; ripgrep's newline-delimited JSON parses cleanly.
         raise subprocess.TimeoutExpired(cmd, timeout=30, output=frame + "\n")
 
-    monkeypatch.setattr(fs_module.subprocess, "run", timeout_run)
+    monkeypatch.setattr(grep_module.subprocess, "run", timeout_run)
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     result = be.grep("hello", path=str(tmp_path))
@@ -896,7 +897,7 @@ def test_ripgrep_timeout_returns_partial_results_when_output_captured(tmp_path: 
 @pytest.mark.usefixtures("_isolate_rg_cache")
 def test_ripgrep_timeout_decodes_bytes_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`TimeoutExpired.stdout` is bytes even under `text=True`; partial output must still be parsed."""
-    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(grep_module.shutil, "which", lambda _name: "/usr/bin/rg")
     (tmp_path / "a.txt").write_text("hello\n")
     frame = json.dumps({"type": "match", "data": {"path": {"text": "a.txt"}, "lines": {"text": "hello\n"}, "line_number": 1}})
 
@@ -904,7 +905,7 @@ def test_ripgrep_timeout_decodes_bytes_output(tmp_path: Path, monkeypatch: pytes
         # Bytes output mirrors what `subprocess.run` populates on `TimeoutExpired`.
         raise subprocess.TimeoutExpired(cmd, timeout=30, output=(frame + "\n").encode())
 
-    monkeypatch.setattr(fs_module.subprocess, "run", timeout_run)
+    monkeypatch.setattr(grep_module.subprocess, "run", timeout_run)
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     result = be.grep("hello", path=str(tmp_path))
@@ -919,7 +920,8 @@ def test_glob_times_out_and_flags_truncated(tmp_path: Path, monkeypatch: pytest.
     (tmp_path / "a.py").write_text("x")
     (tmp_path / "b.py").write_text("y")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-    # A negative budget puts the deadline in the past so the first iteration trips it.
+    monkeypatch.setattr(fs_module, "list_via_fd", lambda *_a, **_k: None)
+    # A negative budget puts the deadline in the past so the walk trips it.
     monkeypatch.setattr(fs_module, "_DEFAULT_GLOB_TIMEOUT", -1)
 
     result = be.glob("*.py")
@@ -933,8 +935,7 @@ def test_glob_zero_match_still_honors_deadline(tmp_path: Path, monkeypatch: pyte
     (tmp_path / "dir").mkdir()
     (tmp_path / "dir" / "a.txt").write_text("x")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-    # A negative budget puts the deadline in the past so the walk trips it even
-    # though the pattern never matches anything.
+    monkeypatch.setattr(fs_module, "list_via_fd", lambda *_a, **_k: None)
     monkeypatch.setattr(fs_module, "_DEFAULT_GLOB_TIMEOUT", -1)
 
     result = be.glob("__missing__")
@@ -949,19 +950,21 @@ def test_glob_returns_matches_gathered_before_deadline(tmp_path: Path, monkeypat
     for name in ("a.py", "b.py", "c.py"):
         (tmp_path / name).write_text("x")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-    monkeypatch.setattr(fs_module, "_DEFAULT_GLOB_TIMEOUT", 2)
-    # First reading sets the deadline (0 + 2 = 2); the walk then processes two
-    # entries (ticks 1, 2) before the third (tick 3) trips the deadline.
-    ticks = iter([0, 1, 2, 3, 4, 5, 6])
-    monkeypatch.setattr(fs_module.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(fs_module, "list_via_fd", lambda *_a, **_k: None)
+
+    def partial_scandir(*_a: object, **_k: object) -> tuple[list[tuple[str, bool]], bool]:
+        # Simulate a truncated walk that only saw a.py before the deadline.
+        return [("a.py", False)], True
+
+    monkeypatch.setattr(fs_module, "list_via_scandir", partial_scandir)
 
     result = be.glob("*.py")
 
     assert result.truncated is True
     assert result.error is None
-    # Partial, non-empty payload: some matches landed before the deadline.
     assert result.matches is not None
-    assert 0 < len(result.matches) < 3
+    assert len(result.matches) == 1
+    assert result.matches[0]["path"].endswith("a.py")
 
 
 def test_glob_mid_iteration_oserror_is_error_not_truncated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -969,7 +972,13 @@ def test_glob_mid_iteration_oserror_is_error_not_truncated(tmp_path: Path, monke
     (tmp_path / "a.py").write_text("x")
     (tmp_path / "b.py").write_text("y")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-    _install_flaky_rglob(monkeypatch, OSError("simulated mid-walk failure"))
+    monkeypatch.setattr(fs_module, "list_via_fd", lambda *_a, **_k: None)
+
+    def boom(*_a: object, **_k: object) -> None:
+        msg = "simulated mid-walk failure"
+        raise OSError(msg)
+
+    monkeypatch.setattr(fs_module, "list_via_scandir", boom)
 
     result = be.glob("*")
 
@@ -1004,17 +1013,17 @@ def test_ripgrep_exec_race_logs_warning_and_clears_cache(tmp_path: Path, monkeyp
         which_calls["n"] += 1
         return "/usr/bin/rg"
 
-    monkeypatch.setattr(fs_module.shutil, "which", counting_which)
+    monkeypatch.setattr(grep_module.shutil, "which", counting_which)
 
     def missing_run(cmd: list[str], **_kwargs: object) -> object:
         raise FileNotFoundError(2, "No such file or directory", cmd[0])
 
-    monkeypatch.setattr(fs_module.subprocess, "run", missing_run)
+    monkeypatch.setattr(grep_module.subprocess, "run", missing_run)
 
     (tmp_path / "a.txt").write_text("hello\n")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
-    with caplog.at_level(logging.WARNING, logger=fs_module.logger.name):
+    with caplog.at_level(logging.WARNING, logger=grep_module.logger.name):
         be.grep("hello", path=str(tmp_path))
         be.grep("hello", path=str(tmp_path))
 
@@ -1036,17 +1045,17 @@ def test_ripgrep_nonzero_returncode_falls_back_with_warning(
     Without this guard, malformed globs or unreadable directories produce an
     empty result set and the agent confidently reports no matches.
     """
-    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(grep_module.shutil, "which", lambda _name: "/usr/bin/rg")
 
     def erroring_run(_cmd: list[str], **_kwargs: object) -> _FakeProc:
         return _FakeProc(stdout="", stderr="rg: error parsing glob 'docs/[': unclosed character class", returncode=2)
 
-    monkeypatch.setattr(fs_module.subprocess, "run", erroring_run)
+    monkeypatch.setattr(grep_module.subprocess, "run", erroring_run)
 
     (tmp_path / "a.txt").write_text("hello\n")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
-    with caplog.at_level(logging.WARNING, logger=fs_module.logger.name):
+    with caplog.at_level(logging.WARNING, logger=grep_module.logger.name):
         result = be.grep("hello", path=str(tmp_path))
 
     msgs = [r.getMessage() for r in caplog.records if "ripgrep exited 2" in r.getMessage()]
