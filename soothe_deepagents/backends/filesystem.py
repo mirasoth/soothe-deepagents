@@ -22,7 +22,10 @@ from soothe_deepagents.backends.glob_search import (
     parse_glob_pattern,
 )
 from soothe_deepagents.backends.grep_search import (
+    get_rg_bin as get_rg_bin,
+    is_rg_available as is_rg_available,
     python_search as _python_search,
+    reset_rg_bin_cache as reset_rg_bin_cache,
     ripgrep_search as _ripgrep_search,
 )
 from soothe_deepagents.backends.protocol import (

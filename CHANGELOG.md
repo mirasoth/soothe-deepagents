@@ -2,6 +2,11 @@
 
 # Deep Agents Changelog
 
+## [0.8.4] - 2026-07-25
+
+### Fixed
+- Re-export `get_rg_bin` / `is_rg_available` / `reset_rg_bin_cache` from `FilesystemBackend`'s module (ruff F401 had stripped them from 0.8.3)
+
 ## [0.8.3] - 2026-07-25
 
 ### Added
