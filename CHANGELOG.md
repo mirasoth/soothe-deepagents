@@ -2,6 +2,19 @@
 
 # Deep Agents Changelog
 
+## [0.8.5] - 2026-08-08
+
+### Fixed
+- LLM rate-limit registry is safe across multiple asyncio event loops: per-budget semaphores are loop-local; registry mutation uses a threading lock (no cross-loop `asyncio.Lock` / `create_task` from sync cleanup)
+
+### Added
+- Process-wide `global_concurrent_limit` / `max_concurrent_requests_global` via `CrossLoopSemaphore` so in-flight LLM calls are capped across budget keys and event loops
+- `global_concurrent_limit` / `max_concurrent_requests_global` of `0` means unlimited (default); positive values remain a hard process-wide cap
+- Concurrency/throttling 429s reduce a finite global concurrent slot limit (floor 1); unlimited (`0`) is left unchanged
+
+### Removed
+- Dead post-fix shims: `ThreadBudget.semaphore` property, async `redistribute_budgets()`, fake-async `get_budget` (now sync), unused middleware `_concurrent_limit_global` field
+
 ## [0.8.4] - 2026-07-25
 
 ### Fixed
