@@ -435,6 +435,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     backend: BackendProtocol | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     enable_general_purpose_subagent: bool | None = None,
+    general_purpose_subagent_profile: GeneralPurposeSubagentProfile | None = None,
     filesystem_tools: Sequence[FsToolName] | Literal["all"] | None = None,
     parent_owned_state_keys: frozenset[str] | None = None,
     reliability_middleware: ReliabilityMiddlewareConfig | None = None,
@@ -672,6 +673,13 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             - `True`: always auto-add the default general-purpose subagent
                 unless the caller already provided one.
             - `False`: never auto-add the default general-purpose subagent.
+        general_purpose_subagent_profile: Optional direct override for the
+            general-purpose subagent's profile. When provided, this takes
+            precedence over the harness profile's `general_purpose_subagent`
+            setting. Use this to customize the GP subagent's `filesystem_tools`
+            and `permissions` independently of the parent agent — for example,
+            to create a readonly GP subagent that can inspect the workspace but
+            not modify it.
         filesystem_tools: Optional built-in filesystem tool selection forwarded
             to default `FilesystemMiddleware` instances for the main agent and
             generated synchronous subagents.
@@ -945,18 +953,22 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # is how callers override the default. Skipping in those cases also avoids
     # invoking factory-based `extra_middleware` whose output would be thrown
     # away.
-    gp_profile = _profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
+    gp_profile = general_purpose_subagent_profile or _profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
     gp_enabled = gp_profile.enabled is not False
     if enable_general_purpose_subagent is not None:
         gp_enabled = enable_general_purpose_subagent
     if gp_enabled and not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
+        # Resolve GP-specific filesystem tools and permissions: use the
+        # profile overrides when set, otherwise inherit from the parent agent.
+        gp_fs_tools = gp_profile.filesystem_tools if gp_profile.filesystem_tools is not None else normalized_filesystem_tools
+        gp_permissions = gp_profile.permissions if gp_profile.permissions is not None else permissions
         gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
             TodoListMiddleware(),
             FilesystemMiddleware(
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
-                _permissions=permissions,
-                tools=normalized_filesystem_tools,
+                _permissions=gp_permissions,
+                tools=gp_fs_tools,
             ),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
@@ -1009,7 +1021,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         else:
             general_purpose_spec["system_prompt"] = _apply_profile_prompt(_profile, GENERAL_PURPOSE_SUBAGENT["system_prompt"])
         gp_interrupt_on = _merge_fs_interrupt_on(
-            _build_interrupt_on_from_permissions(permissions or []),
+            _build_interrupt_on_from_permissions(gp_permissions or []),
             interrupt_on,
         )
         if gp_interrupt_on is not None:

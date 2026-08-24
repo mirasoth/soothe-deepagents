@@ -21,10 +21,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 
+from soothe_deepagents.middleware.filesystem import FilesystemPermission, FsToolName
 from soothe_deepagents.profiles._keys import validate_profile_key
 
 if TYPE_CHECKING:
@@ -135,15 +136,43 @@ class GeneralPurposeSubagentProfile:
         layers on top.
     """
 
+    filesystem_tools: list[FsToolName] | None = None
+    """Override for the default general-purpose subagent's filesystem tool surface.
+
+    `None` means inherit the parent agent's filesystem tools (the default
+    behavior — the GP subagent gets the same FS tools as the main agent).
+
+    When set to a list of `FsToolName` values (e.g. `["ls", "read_file",
+    "file_info", "glob", "grep"]`), the GP subagent's `FilesystemMiddleware`
+    is constructed with only those tools, regardless of the parent agent's
+    filesystem tool configuration. This allows a readonly GP subagent that
+    can inspect the workspace but not modify it.
+    """
+
+    permissions: list[FilesystemPermission] | None = None
+    """Override for the default general-purpose subagent's filesystem permissions.
+
+    `None` means inherit the parent agent's permission rules (the default
+    behavior — the GP subagent gets the same permissions as the main agent).
+
+    When set, the GP subagent's `FilesystemMiddleware` uses these
+    permission rules instead of the parent's. This allows a readonly GP
+    subagent with write-deny permissions, e.g.
+    `[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")]`.
+    """
+
     def to_dict(self) -> dict[str, Any]:
         """Dump this sub-profile to a plain dict.
 
         Only fields with non-`None` values are emitted so the serialized form
         round-trips cleanly without forcing `None` defaults into the config.
 
+        `permissions` entries are serialized as plain dicts (via
+        `dataclasses.asdict`) so they can round-trip through YAML/JSON.
+
         Returns:
-            A plain dict with at most `enabled`, `description`, and
-                `system_prompt` keys.
+            A plain dict with at most `enabled`, `description`,
+                `system_prompt`, `filesystem_tools`, and `permissions` keys.
         """
         out: dict[str, Any] = {}
         if self.enabled is not None:
@@ -152,6 +181,10 @@ class GeneralPurposeSubagentProfile:
             out["description"] = self.description
         if self.system_prompt is not None:
             out["system_prompt"] = self.system_prompt
+        if self.filesystem_tools is not None:
+            out["filesystem_tools"] = list(self.filesystem_tools)
+        if self.permissions is not None:
+            out["permissions"] = [p if isinstance(p, dict) else asdict(p) for p in self.permissions]
         return out
 
     @classmethod
@@ -159,8 +192,15 @@ class GeneralPurposeSubagentProfile:
         """Construct a sub-profile from a plain dict.
 
         Args:
-            data: Mapping with any subset of `enabled`, `description`, and
-                `system_prompt` keys.
+            data: Mapping with any subset of `enabled`, `description`,
+                `system_prompt`, `filesystem_tools`, and `permissions` keys.
+
+                `filesystem_tools` is a list of `FsToolName` strings (e.g.
+                `["ls", "read_file", "file_info", "glob", "grep"]`).
+
+                `permissions` is a list of dicts with `operations`, `paths`,
+                and optional `mode` keys, each validated and converted to a
+                `FilesystemPermission` object.
 
         Returns:
             A new `GeneralPurposeSubagentProfile`.
@@ -176,6 +216,8 @@ class GeneralPurposeSubagentProfile:
         enabled = data.get("enabled")
         description = data.get("description")
         system_prompt = data.get("system_prompt")
+        filesystem_tools = _coerce_filesystem_tools(data.get("filesystem_tools"))
+        permissions = _coerce_permissions(data.get("permissions"))
         if enabled is not None and not isinstance(enabled, bool):
             msg = f"`enabled` must be bool or None, got {type(enabled).__name__}"
             raise TypeError(msg)
@@ -185,7 +227,13 @@ class GeneralPurposeSubagentProfile:
         if system_prompt is not None and not isinstance(system_prompt, str):
             msg = f"`system_prompt` must be str or None, got {type(system_prompt).__name__}"
             raise TypeError(msg)
-        return cls(enabled=enabled, description=description, system_prompt=system_prompt)
+        return cls(
+            enabled=enabled,
+            description=description,
+            system_prompt=system_prompt,
+            filesystem_tools=cast("list[FsToolName] | None", filesystem_tools),
+            permissions=permissions,
+        )
 
 
 @dataclass(frozen=True)
@@ -824,6 +872,41 @@ def _coerce_str_or_none(value: object, field_name: str) -> str | None:
     raise TypeError(msg)
 
 
+def _coerce_filesystem_tools(value: object) -> list[str] | None:
+    """Validate and return a list of filesystem tool names from a dict value."""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        msg = f"`filesystem_tools` must be a list of strings, got {type(value).__name__}"
+        raise TypeError(msg)
+    out: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str):
+            msg = f"`filesystem_tools` entries must be strings, got {type(entry).__name__} ({entry!r})"
+            raise TypeError(msg)
+        out.append(entry)
+    return out
+
+
+def _coerce_permissions(value: object) -> list[FilesystemPermission] | None:
+    """Validate and construct `FilesystemPermission` objects from a list of dicts."""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        msg = f"`permissions` must be a list of dicts, got {type(value).__name__}"
+        raise TypeError(msg)
+    out: list[FilesystemPermission] = []
+    for entry in value:
+        if isinstance(entry, FilesystemPermission):
+            out.append(entry)
+            continue
+        if not isinstance(entry, Mapping):
+            msg = f"`permissions` entries must be dicts or FilesystemPermission, got {type(entry).__name__}"
+            raise TypeError(msg)
+        out.append(FilesystemPermission(**cast("dict[str, Any]", entry)))
+    return out
+
+
 def _coerce_str_mapping(value: object, field_name: str) -> dict[str, str]:
     """Validate that `value` is a `str -> str` mapping (or `None`) and return a plain dict."""
     if value is None:
@@ -1191,6 +1274,8 @@ def _merge_general_purpose_subagent_profiles(
         enabled=override.enabled if override.enabled is not None else base.enabled,
         description=override.description if override.description is not None else base.description,
         system_prompt=override.system_prompt if override.system_prompt is not None else base.system_prompt,
+        filesystem_tools=override.filesystem_tools if override.filesystem_tools is not None else base.filesystem_tools,
+        permissions=override.permissions if override.permissions is not None else base.permissions,
     )
 
 

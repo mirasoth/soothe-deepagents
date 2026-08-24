@@ -2,6 +2,13 @@
 
 # Deep Agents Changelog
 
+## [0.8.6] - 2026-08-24
+
+### Added
+- `GeneralPurposeSubagentProfile.filesystem_tools` and `.permissions` fields: override the auto-added general-purpose subagent's filesystem tool surface and permission rules independently of the parent agent. Enables a readonly GP subagent (e.g. `filesystem_tools=["ls", "read_file", "file_info", "glob", "grep"]` + write-deny permissions) while the main agent retains full access.
+- `create_deep_agent(general_purpose_subagent_profile=...)` parameter: direct override for the GP subagent's profile, taking precedence over the harness profile. Callers (e.g. soothe-nano) can customize the GP subagent without constructing a full `HarnessProfile`.
+- `GeneralPurposeSubagentProfile.to_dict` / `from_dict` round-trip `filesystem_tools` and `permissions` (permissions serialized as plain dicts via `dataclasses.asdict`).
+
 ## [0.8.5] - 2026-08-08
 
 ### Fixed
