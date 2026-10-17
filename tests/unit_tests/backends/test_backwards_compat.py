@@ -1,10 +1,9 @@
 """Backwards compatibility tests for file format after the API cut.
 
 V1 and v2 writes both persist plain `str` content. Legacy `list[str]` items
-seeded in the store still raise `TypeError` when materialized.
+seeded in the store are tolerated: their lines are joined with newlines.
 """
 
-import pytest
 from langgraph.store.memory import InMemoryStore
 
 from soothe_deepagents.backends.store import StoreBackend
@@ -27,8 +26,8 @@ class TestV1WriteStorageShape:
         assert "encoding" not in item.value
 
 
-class TestLegacyListContentRaisesTypeError:
-    """Legacy list[str] store items are rejected when read back."""
+class TestLegacyListContentIsJoined:
+    """Legacy list[str] store items are joined back into text when materialized."""
 
     def _seed_legacy_item(self, mem_store: InMemoryStore, path: str, content: str) -> None:
         mem_store.put(
@@ -37,38 +36,50 @@ class TestLegacyListContentRaisesTypeError:
             _to_legacy_file_data(create_file_data(content)),
         )
 
-    def test_read_raises_type_error(self) -> None:
+    def test_read_joins_legacy_lines(self) -> None:
         mem_store = InMemoryStore()
         self._seed_legacy_item(mem_store, "/old/file.txt", "hello\nworld")
         be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format="v2")
 
-        with pytest.raises(TypeError, match="list\\[str\\]"):
-            be.read("/old/file.txt")
+        read_result = be.read("/old/file.txt")
+        assert read_result.error is None
+        assert read_result.file_data is not None
+        assert read_result.file_data["content"] == "hello\nworld"
 
-    def test_edit_raises_type_error(self) -> None:
+    def test_edit_reads_legacy_content(self) -> None:
         mem_store = InMemoryStore()
         self._seed_legacy_item(mem_store, "/old/code.py", "foo\nbar")
         be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format="v2")
 
-        with pytest.raises(TypeError, match="list\\[str\\]"):
-            be.edit("/old/code.py", "bar", "qux")
+        edit_result = be.edit("/old/code.py", "bar", "qux")
+        assert edit_result.error is None
 
-    def test_grep_raises_type_error_when_legacy_items_present(self) -> None:
+        read_result = be.read("/old/code.py")
+        assert read_result.error is None
+        assert read_result.file_data is not None
+        assert read_result.file_data["content"] == "foo\nqux"
+
+    def test_grep_reads_legacy_items(self) -> None:
         mem_store = InMemoryStore()
         self._seed_legacy_item(mem_store, "/src/legacy.py", "def legacy():\n    pass")
         be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format="v2")
         be.write("/src/modern.py", "def modern():\n    pass")
 
-        with pytest.raises(TypeError, match="list\\[str\\]"):
-            be.grep("def", path="/")
+        result = be.grep("def", path="/")
+        assert result.error is None
+        matched_paths = {match["path"] for match in (result.matches or [])}
+        assert "/src/legacy.py" in matched_paths
+        assert "/src/modern.py" in matched_paths
 
-    def test_download_raises_type_error(self) -> None:
+    def test_download_reads_legacy_content(self) -> None:
         mem_store = InMemoryStore()
         self._seed_legacy_item(mem_store, "/data.csv", "alpha\nbeta")
         be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format="v2")
 
-        with pytest.raises(TypeError, match="list\\[str\\]"):
-            be.download_files(["/data.csv"])
+        responses = be.download_files(["/data.csv"])
+        assert len(responses) == 1
+        assert responses[0].error is None
+        assert responses[0].content == b"alpha\nbeta"
 
 
 class TestV1OperationsUsePlainStr:

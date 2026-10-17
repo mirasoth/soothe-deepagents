@@ -47,7 +47,11 @@ Use a **plain tool** when:
 * The tool is specific to a single consumer (e.g. CLI-only)
 """
 
-from soothe_deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
+from soothe_deepagents.middleware.async_subagents import (
+    AsyncSubAgent,
+    AsyncSubAgentMiddleware,
+    TaskEvent,
+)
 from soothe_deepagents.middleware.filesystem import (
     ApplyDiffSchema,
     FilesystemMiddleware,
@@ -84,6 +88,8 @@ from soothe_deepagents.middleware.rubric import (
 from soothe_deepagents.middleware.skills import (
     SkillMetadata,
     SkillsMiddleware,
+    SkillsState,
+    SkillToolResolver,
     alist_skills,
     alist_skills_with_errors,
     list_skills,
@@ -103,6 +109,7 @@ from soothe_deepagents.middleware.summarization import (
     create_summarization_tool_middleware,
 )
 from soothe_deepagents.middleware.tool_timeout import ToolTimeoutMiddleware
+from soothe_deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
 
 __all__ = [
     "DEEPAGENTS_DEFAULT_SUMMARY_PROMPT",
@@ -131,13 +138,17 @@ __all__ = [
     "RubricResult",
     "RubricState",
     "SkillMetadata",
+    "SkillToolResolver",
     "SkillsMiddleware",
+    "SkillsState",
     "SubAgent",
     "SubAgentMiddleware",
     "SummarizationMiddleware",
     "SummarizationToolMiddleware",
+    "TaskEvent",
     "ToolOutputCapMiddleware",
     "ToolTimeoutMiddleware",
+    "UnsupportedContentMiddleware",
     "alist_skills",
     "alist_skills_with_errors",
     "calc_rate_limit_backoff",

@@ -4,7 +4,6 @@ At the moment these tests are written against the state backend, but we will nee
 to extend them to other backends as well.
 """
 
-import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -13,12 +12,7 @@ from soothe_deepagents.graph import create_deep_agent
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
-def _state_backend(file_format: str) -> StateBackend:
-    return StateBackend(file_format=file_format)  # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize("file_format", ["v1", "v2"])
-def test_parallel_write_file_calls_trigger_list_reducer(file_format: str) -> None:
+def test_parallel_write_file_calls_trigger_list_reducer() -> None:
     """Verify that parallel write_file calls correctly update file state.
 
     This test ensures that when an agent's model issues multiple `write_file`
@@ -58,7 +52,7 @@ def test_parallel_write_file_calls_trigger_list_reducer(file_format: str) -> Non
     agent = create_deep_agent(
         model=fake_model,
         checkpointer=InMemorySaver(),
-        backend=_state_backend(file_format),
+        backend=StateBackend(),
     )
 
     # Invoke the agent, which will trigger the parallel tool calls
@@ -71,13 +65,12 @@ def test_parallel_write_file_calls_trigger_list_reducer(file_format: str) -> Non
     assert "/test1.txt" in result["files"], "File /test1.txt should exist in the final state"
     assert "/test2.txt" in result["files"], "File /test2.txt should exist in the final state"
 
-    # Verify the content of the files (both v1 and v2 store plain str)
+    # Verify the content of the files
     assert result["files"]["/test1.txt"]["content"] == "hello"
     assert result["files"]["/test2.txt"]["content"] == "world"
 
 
-@pytest.mark.parametrize("file_format", ["v2"])
-def test_edit_file_single_replacement(file_format: str) -> None:
+def test_edit_file_single_replacement() -> None:
     """Verify that edit_file correctly replaces a single occurrence of a string."""
     # Fake model will write a file, then edit it
     fake_model = GenericFakeChatModel(
@@ -117,7 +110,7 @@ def test_edit_file_single_replacement(file_format: str) -> None:
     agent = create_deep_agent(
         model=fake_model,
         checkpointer=InMemorySaver(),
-        backend=_state_backend(file_format),
+        backend=StateBackend(),
     )
 
     result = agent.invoke(
@@ -129,12 +122,12 @@ def test_edit_file_single_replacement(file_format: str) -> None:
     assert "/code.py" in result["files"], "File /code.py should exist"
     full_content = result["files"]["/code.py"]["content"]
     assert isinstance(full_content, str)
-    assert "hello universe" in full_content, f"Content should be updated, got: {full_content}"
-    assert "hello world" not in full_content, "Old content should be replaced"
+    text = full_content
+    assert "hello universe" in text, f"Content should be updated, got: {text}"
+    assert "hello world" not in text, "Old content should be replaced"
 
 
-@pytest.mark.parametrize("file_format", ["v2"])
-def test_edit_file_replace_all(file_format: str) -> None:
+def test_edit_file_replace_all() -> None:
     """Verify that edit_file with replace_all replaces all occurrences of a string."""
     # Fake model will write a file with repeated content, then edit all occurrences
     fake_model = GenericFakeChatModel(
@@ -178,7 +171,7 @@ def test_edit_file_replace_all(file_format: str) -> None:
     agent = create_deep_agent(
         model=fake_model,
         checkpointer=InMemorySaver(),
-        backend=_state_backend(file_format),
+        backend=StateBackend(),
     )
 
     result = agent.invoke(
@@ -359,8 +352,7 @@ def test_grep_finds_written_file() -> None:
 
 
 def test_parallel_edit_file_calls() -> None:
-    """Verify parallel edit_file calls on the same path fail fast."""
-    # Fake model will write a file, then issue multiple edit_file calls in parallel
+    """Reject the second parallel edit to the same file."""
     fake_model = GenericFakeChatModel(
         messages=iter(
             [
@@ -394,7 +386,7 @@ def test_parallel_edit_file_calls() -> None:
                         {
                             "name": "edit_file",
                             "args": {
-                                "file_path": "/multi.txt",
+                                "file_path": "/./multi.txt",
                                 "old_string": "two",
                                 "new_string": "2",
                             },
@@ -417,11 +409,10 @@ def test_parallel_edit_file_calls() -> None:
         {"messages": [HumanMessage(content="Edit file in parallel")]},
         config={"configurable": {"thread_id": "test_thread_parallel_edits"}},
     )
-    tool_messages = [msg for msg in result["messages"] if isinstance(msg, ToolMessage) and msg.name == "edit_file"]
-    assert len(tool_messages) == 2
-    error_messages = [msg for msg in tool_messages if msg.status == "error"]
-    assert len(error_messages) >= 1
-    assert all("parallel edit_file calls for /multi.txt are not allowed" in msg.content for msg in error_messages)
+
+    edits = [message for message in result["messages"] if isinstance(message, ToolMessage) and message.name == "edit_file"]
+    assert [message.status for message in edits] == ["success", "error"]
+    assert result["files"]["/multi.txt"]["content"] == "line 1\nline two\nline three"
 
 
 def test_path_traversal_returns_error_message() -> None:
@@ -592,3 +583,7 @@ def test_ls_with_invalid_path_returns_error_message() -> None:
 
     error_message = tool_messages[0].content
     assert error_message == "Error: Path traversal not allowed: ../../../etc"
+
+
+def _state_backend(file_format: str) -> StateBackend:
+    return StateBackend(file_format=file_format)  # type: ignore[arg-type]

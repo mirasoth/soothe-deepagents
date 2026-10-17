@@ -23,6 +23,8 @@ from soothe_deepagents.backends.protocol import (
     WriteResult,
 )
 from soothe_deepagents.backends.utils import (
+    InvalidGlobPatternError,
+    _copy_file_data_with_content,
     _get_backend_read_file_type,
     _glob_search_files,
     create_file_data,
@@ -42,8 +44,8 @@ class StateBackend(BackendProtocol):
     checkpointed after each agent step.
 
     Reads and writes go through LangGraph's `CONFIG_KEY_READ` /
-    `CONFIG_KEY_SEND` so that state updates are queued as proper channel
-    writes rather than returned as `files_update` dicts.
+    `CONFIG_KEY_SEND` so that state updates are applied as channel writes
+    to the `files` state key.
     """
 
     def __init__(
@@ -182,9 +184,7 @@ class StateBackend(BackendProtocol):
                 continue
 
             # This is a file directly in the current directory
-            # BACKWARDS COMPAT: handle legacy list[str] content for size computation
-            raw = fd.get("content", "")
-            size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
+            size = len(file_data_to_string(fd).encode("utf-8"))
             infos.append(
                 {
                     "path": k,
@@ -225,20 +225,11 @@ class StateBackend(BackendProtocol):
             return ReadResult(error=f"File '{file_path}' not found")
 
         if _get_backend_read_file_type(file_path) != "text":
-            return ReadResult(file_data=file_data)
+            # Normalize legacy `list[str]` content to a string without mutating
+            # the stored file; timestamps and encoding are carried through.
+            return ReadResult(file_data=_copy_file_data_with_content(file_data, file_data_to_string(file_data)))
 
-        sliced = slice_read_response(file_data, offset, limit)
-        if isinstance(sliced, ReadResult):
-            return sliced
-        sliced_fd = FileData(
-            content=sliced,
-            encoding=file_data.get("encoding", "utf-8"),
-        )
-        if "created_at" in file_data:
-            sliced_fd["created_at"] = file_data["created_at"]
-        if "modified_at" in file_data:
-            sliced_fd["modified_at"] = file_data["modified_at"]
-        return ReadResult(file_data=sliced_fd)
+        return slice_read_response(file_data, offset, limit)
 
     def write(
         self,
@@ -255,6 +246,7 @@ class StateBackend(BackendProtocol):
 
         existing = files.get(file_path)
         new_file_data = update_file_data(existing, content) if existing is not None else create_file_data(content)
+        new_file_data["encoding"] = "utf-8"
         self._send_files_update({file_path: self._prepare_for_storage(new_file_data)})
         return WriteResult(path=file_path)
 
@@ -319,27 +311,37 @@ class StateBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> GrepResult:
         """Search state files for a literal text pattern."""
         files = self._read_files()
-        return grep_matches_from_files(files, pattern, path if path is not None else "/", glob)
+        return grep_matches_from_files(files, pattern, path if path is not None else "/", glob, max_count=max_count)
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
-        """Get `FileInfo` for files matching glob pattern."""
+        """Get `FileInfo` for files matching glob pattern.
+
+        Matching follows the shared backend contract -- see `BackendProtocol.glob`.
+        A bare pattern is basename-at-any-depth, so `*.py` matches nested files.
+        A refused pattern is returned as `GlobResult(error=...)`, not raised.
+        """
         files = self._read_files()
-        result = _glob_search_files(files, pattern, path)
+        try:
+            result = _glob_search_files(files, pattern, path)
+        except InvalidGlobPatternError as exc:
+            # `glob` is a tool boundary: report a refused pattern as a result
+            # rather than raising, matching FilesystemBackend and SandboxBackend.
+            # Catch the specific type -- a bare `ValueError` here would also
+            # capture path-normalization failures and mislabel them as pattern
+            # errors, sending the model off rewriting a glob that was fine.
+            return GlobResult(error=str(exc))
         if result == "No files found":
             return GlobResult(matches=[])
         paths = result.split("\n")
         infos: list[FileInfo] = []
         for p in paths:
             fd = files.get(p)
-            if fd:
-                # BACKWARDS COMPAT: handle legacy list[str] content for size computation
-                raw = fd.get("content", "")
-                size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
-            else:
-                size = 0
+            size = len(file_data_to_string(fd).encode("utf-8")) if fd else 0
             infos.append(
                 {
                     "path": p,
@@ -365,12 +367,13 @@ class StateBackend(BackendProtocol):
         for path, content in files:
             try:
                 text = content.decode("utf-8")
+                encoding = "utf-8"
             except UnicodeDecodeError:
                 text = base64.b64encode(content).decode("ascii")
+                encoding = "base64"
 
-            prev = existing.get(path)
-            file_data = update_file_data(prev, text) if prev else create_file_data(text)
-            update[path] = {**file_data}
+            created_at = (existing.get(path) or {}).get("created_at")
+            update[path] = {**create_file_data(text, created_at=created_at, encoding=encoding)}
             responses.append(FileUploadResponse(path=path, error=None))
 
         if update:

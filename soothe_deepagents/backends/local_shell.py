@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import uuid
 from typing import TYPE_CHECKING
 
@@ -121,10 +122,10 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
                 - If not provided, defaults to the current working directory.
                 - Shell commands execute with this as their working directory.
-                - When `virtual_mode=False` (default): Paths are used as-is.
+                - When `virtual_mode=False`: Paths are used as-is.
 
                     Agents can access any file using absolute paths or `..` sequences.
-                - When `virtual_mode=True`: Acts as a virtual root for filesystem operations.
+                - When `virtual_mode=True` (default): Acts as a virtual root for filesystem operations.
 
                     Useful with `CompositeBackend` to support routing file
                     operations across different backend implementations.
@@ -133,7 +134,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
             virtual_mode: Enable virtual path mode for filesystem operations.
 
-                When `True`, treats `root_dir` as a virtual root filesystem.
+                When `True` (default), treats `root_dir` as a virtual root filesystem.
                 All paths are interpreted relative to `root_dir`
                 (e.g., `/file.txt` maps to `{root_dir}/file.txt`).
                 Path traversal (`..`, `~`) is blocked.
@@ -310,6 +311,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 timeout=effective_timeout,
                 env=self._env,
                 cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
+                start_new_session=(sys.platform != "win32"),
             )
 
             # Combine stdout and stderr

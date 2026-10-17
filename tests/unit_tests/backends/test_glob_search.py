@@ -1,75 +1,85 @@
-"""Tests for fd + scandir glob (directory support and Python fallback)."""
+"""Tests for the `fd` + scandir glob helpers consumed by soothe-nano.
+
+`FilesystemBackend.glob` follows the upstream grep-include contract and does
+not use these helpers, but they remain part of the package's public surface
+(`soothe_nano.filesystem.{workspace,local}` and `soothe_nano.diagnose.tool_deps`
+import them directly), so they are pinned here against silent breakage.
+"""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
-from soothe_deepagents.backends import filesystem as fs_module, glob_search as glob_search_module
-from soothe_deepagents.backends.filesystem import FilesystemBackend
+from soothe_deepagents.backends import glob_search as glob_search_module
 from soothe_deepagents.backends.glob_search import (
+    get_fd_bin,
+    is_fd_available,
+    list_via_scandir,
     max_depth_for_pattern,
     parse_glob_pattern,
+    reset_fd_bin_cache,
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pytest
 
 
-def test_parse_and_depth_helpers() -> None:
+def test_parse_glob_pattern_trailing_slash() -> None:
     assert parse_glob_pattern("packages/*/") == ("packages/*", True)
+    assert parse_glob_pattern("**/*.py") == ("**/*.py", False)
+
+
+def test_max_depth_for_pattern() -> None:
     assert max_depth_for_pattern("*.py") is None  # recursive basename
+    assert max_depth_for_pattern("**/*.py") is None
     assert max_depth_for_pattern("packages/*") == 2
 
 
-def test_glob_dirs_only_trailing_slash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(fs_module, "list_via_fd", lambda *_a, **_k: None)
-    (tmp_path / "packages" / "alpha").mkdir(parents=True)
-    (tmp_path / "packages" / "beta").mkdir(parents=True)
-    (tmp_path / "packages" / "alpha" / "src").mkdir()
+def test_list_via_scandir_files_and_dirs(tmp_path: Path) -> None:
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a.py").write_text("x")
+    (tmp_path / "sub" / "b.py").write_text("y")
+
+    files, truncated = list_via_scandir(tmp_path, workspace=tmp_path)
+    assert not truncated
+    assert ("a.py", False) in files
+    assert ("sub", True) in files
+
+
+def test_list_via_scandir_dirs_only(tmp_path: Path) -> None:
+    (tmp_path / "alpha").mkdir()
+    (tmp_path / "beta").mkdir()
     (tmp_path / "readme.txt").write_text("x")
 
-    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-    result = be.glob("packages/*/")
-    assert result.error is None
-    matches = result.matches or []
-    assert matches
-    assert all(m.get("is_dir") for m in matches)
-    names = {Path(m["path"]).name for m in matches}
-    assert names == {"alpha", "beta"}
+    entries, _truncated = list_via_scandir(tmp_path, workspace=tmp_path, dirs_only=True)
+    assert {name for name, is_dir in entries} == {"alpha", "beta"}
+    assert all(is_dir for _name, is_dir in entries)
 
 
-def test_glob_default_excludes_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(fs_module, "list_via_fd", lambda *_a, **_k: None)
-    (tmp_path / "subdir").mkdir()
-    (tmp_path / "a.py").write_text("x")
+def test_list_via_scandir_respects_max_depth(tmp_path: Path) -> None:
+    deep = tmp_path / "packages" / "alpha" / "src"
+    deep.mkdir(parents=True)
+    (deep / "c.py").write_text("z")
 
-    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-    result = be.glob("*", path="/")
-    paths = {m["path"] for m in (result.matches or [])}
-    assert "/a.py" in paths
-    assert "/subdir" not in paths
+    shallow, _truncated = list_via_scandir(tmp_path, workspace=tmp_path, max_depth=2)
+    assert "packages/alpha" in dict.fromkeys(name for name, _is_dir in shallow)
+    assert "packages/alpha/src/c.py" not in shallow
 
 
-def test_glob_include_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(fs_module, "list_via_fd", lambda *_a, **_k: None)
-    (tmp_path / "subdir").mkdir()
-    (tmp_path / "a.py").write_text("x")
+def test_fd_env_override_and_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SOOTHE_FD_PATH", "/opt/fd/bin/fd")
+    monkeypatch.setattr(glob_search_module.shutil, "which", lambda _name: "/opt/fd/bin/fd")
+    reset_fd_bin_cache()
 
-    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-    result = be.glob("*", path="/", include_dirs=True)
-    by_name = {Path(m["path"]).name: m.get("is_dir") for m in (result.matches or [])}
-    assert by_name.get("a.py") is False
-    assert by_name.get("subdir") is True
+    assert get_fd_bin() == "/opt/fd/bin/fd"
+    assert is_fd_available() is True
 
+    monkeypatch.delenv("SOOTHE_FD_PATH")
+    monkeypatch.setattr(glob_search_module.shutil, "which", lambda _name: None)
+    reset_fd_bin_cache()
 
-def test_glob_works_without_fd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(glob_search_module, "get_fd_bin", lambda: None)
-    glob_search_module.reset_fd_bin_cache()
-    (tmp_path / "nested").mkdir()
-    (tmp_path / "nested" / "x.py").write_text("print(1)\n")
-
-    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-    result = be.glob("*.py", path="/")
-    paths = {m["path"] for m in (result.matches or [])}
-    assert "/nested/x.py" in paths
+    assert get_fd_bin() is None
+    assert is_fd_available() is False
+    reset_fd_bin_cache()

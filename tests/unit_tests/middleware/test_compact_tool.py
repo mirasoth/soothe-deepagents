@@ -13,7 +13,6 @@ from langgraph.types import Command
 
 from soothe_deepagents.backends.state import StateBackend
 from soothe_deepagents.middleware.summarization import (
-    SUMMARIZATION_SYSTEM_PROMPT,
     SummarizationMiddleware,
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
@@ -207,7 +206,7 @@ class TestCompactSuccess:
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
-            patch.object(mw._summarization, "_offload_to_backend", return_value="/conversation_history/test-thread.md"),
+            patch.object(mw._summarization, "_offload_to_backend", return_value="/conversation_history/session_abc123.md"),
             patch.object(mw._summarization, "_create_summary", return_value="Summary of the conversation."),
         ):
             result = mw._run_compact(runtime)
@@ -221,11 +220,36 @@ class TestCompactSuccess:
         summary_msg = event["summary_message"]
         assert isinstance(summary_msg, HumanMessage)
         assert "Summary of the conversation." in summary_msg.content
-        assert event["file_path"] == "/conversation_history/test-thread.md"
+        assert event["file_path"] == "/conversation_history/session_abc123.md"
 
         update_messages = result.update["messages"]
         assert len(update_messages) == 1
         assert "Summarized 4 messages" in update_messages[0].content
+
+    def test_compact_uses_summarizer(self) -> None:
+        """The compact tool gets its summary from `summarizer` when one is set."""
+        model = _make_mock_model()
+        summ = SummarizationMiddleware(
+            model=model,
+            backend=_make_mock_backend(),
+            trigger=("fraction", 0.85),
+            summarizer=lambda messages: f"Summarizer saw {len(messages)} messages.",
+        )
+        mw = SummarizationToolMiddleware(summ)
+        runtime = _make_runtime(_make_messages(10))
+
+        with (
+            patch.object(summ, "_determine_cutoff_index", return_value=4),
+            patch.object(summ, "_partition_messages", side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:])),
+            patch.object(summ, "_offload_to_backend", return_value="/conversation_history/session_abc123.md"),
+            patch.object(summ._lc_helper, "_trim_messages_for_summary", side_effect=lambda msgs: msgs),
+        ):
+            result = mw._run_compact(runtime)
+
+        assert isinstance(result, Command)
+        assert result.update is not None
+        assert "Summarizer saw 4 messages." in result.update["_summarization_event"]["summary_message"].content
+        model.invoke.assert_not_called()
 
     def test_compact_success_with_prior_event(self) -> None:
         """State cutoff should be old_cutoff + new_cutoff - 1 with a prior event."""
@@ -271,7 +295,7 @@ class TestCompactSuccess:
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
-            patch.object(mw._summarization, "_aoffload_to_backend", return_value="/conversation_history/test-thread.md"),
+            patch.object(mw._summarization, "_aoffload_to_backend", return_value="/conversation_history/session_abc123.md"),
             patch.object(mw._summarization, "_acreate_summary", return_value="Summary of the conversation."),
         ):
             result = await mw._arun_compact(runtime)
@@ -411,8 +435,8 @@ class TestCompactErrorHandling:
         assert "Compaction failed" in msg.content
         assert "_summarization_event" not in result.update
 
-    def test_backend_resolve_failure_returns_error_tool_message(self) -> None:
-        """Backend factory failure should return an error ToolMessage."""
+    def test_offload_failure_returns_error_tool_message(self) -> None:
+        """Offload failure should return an error ToolMessage."""
         mw = _make_middleware()
         messages = _make_messages(10)
         runtime = _make_runtime(messages)
@@ -426,8 +450,8 @@ class TestCompactErrorHandling:
             ),
             patch.object(mw._summarization, "_create_summary", return_value="Summary."),
             patch.object(
-                mw,
-                "_resolve_backend",
+                mw._summarization,
+                "_offload_to_backend",
                 side_effect=ConnectionError("sandbox unreachable"),
             ),
         ):
@@ -472,8 +496,8 @@ class TestMalformedEvent:
         assert result[0] is summary_msg
 
 
-class TestResolveBackend:
-    """Test backend resolution for tool context."""
+class TestCompactBackendUsage:
+    """Test backend use for compact offloading."""
 
     def test_static_backend(self) -> None:
         """Should return the configured backend instance."""
@@ -485,6 +509,26 @@ class TestResolveBackend:
         mw = SummarizationToolMiddleware(summ)
         runtime = _make_runtime(_make_messages(1))
         assert mw._resolve_backend(runtime) is backend
+
+    def test_compact_writes_history_to_configured_backend(self) -> None:
+        """Compacted history is written through the configured backend."""
+        backend = _make_mock_backend()
+        summarization = SummarizationMiddleware(
+            model=_make_mock_model(),
+            backend=backend,
+            trigger=("fraction", 0.85),
+            keep=("messages", 2),
+        )
+        middleware = SummarizationToolMiddleware(summarization)
+        messages = [HumanMessage(content=f"Message {index}") for index in range(9)]
+        messages.append(_ai_message_with_usage(120_000))
+        result = middleware._run_compact(_make_runtime(messages))
+
+        event = result.update["_summarization_event"]
+        backend.write.assert_called_once()
+        path, content = backend.write.call_args.args
+        assert path == event["file_path"]
+        assert "Message 0" in content
 
 
 class TestComputeStateCutoff:
@@ -640,11 +684,6 @@ class TestIsEligibleForCompaction:
             result = mw._run_compact(runtime)
         assert "_summarization_event" in result.update
 
-    def test_dict_trigger_constructs_langchain_trigger_clauses(self) -> None:
-        """Dict trigger input should populate LangChain's canonical trigger clauses."""
-        mw = _make_middleware_with_trigger({"tokens": 100_000, "messages": 6})
-        assert mw._summarization._lc_helper._trigger_clauses == [{"tokens": 100_000, "messages": 6}]
-
     def test_dict_clause_list_uses_or_semantics(self) -> None:
         """Multiple dict trigger clauses use OR semantics for compact eligibility."""
         mw = _make_middleware_with_trigger(("tokens", 100_000))
@@ -737,24 +776,6 @@ class TestSystemPromptOverride:
         """`system_prompt` must be str or None."""
         with pytest.raises(TypeError, match="must be str or None"):
             SummarizationToolMiddleware(_make_summarization_middleware(), system_prompt=0)  # type: ignore[arg-type]
-
-    def test_wrap_model_call_appends_default_nudge(self) -> None:
-        """Baseline: default `system_prompt` appends the standard nudge text."""
-        mw = _make_middleware()
-        captured: dict[str, ModelRequest] = {}
-
-        def handler(req: ModelRequest) -> None:
-            captured["req"] = req
-
-        request = ModelRequest(
-            model=GenericFakeChatModel(messages=iter([])),
-            messages=[HumanMessage(content="hi")],
-            system_message=SystemMessage(content="base"),
-            state={"messages": []},
-        )
-        mw.wrap_model_call(request, handler)  # type: ignore[arg-type]
-        appended = list(captured["req"].system_message.content_blocks)[-1].get("text", "")  # type: ignore[union-attr]
-        assert SUMMARIZATION_SYSTEM_PROMPT in appended
 
     def test_wrap_model_call_skips_appending_when_system_prompt_none(self) -> None:
         """`system_prompt=None` passes the request through untouched."""

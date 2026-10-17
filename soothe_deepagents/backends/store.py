@@ -3,7 +3,7 @@
 import base64
 import re
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from langgraph.config import get_store
 from langgraph.runtime import get_runtime
@@ -25,6 +25,7 @@ from soothe_deepagents.backends.protocol import (
     WriteResult,
 )
 from soothe_deepagents.backends.utils import (
+    InvalidGlobPatternError,
     _get_backend_read_file_type,
     _glob_search_files,
     create_file_data,
@@ -95,26 +96,26 @@ class StoreBackend(BackendProtocol):
     Uses LangGraph's Store for persistent, cross-conversation storage.
     Files are organized via namespaces and persist across all threads.
 
-    The namespace can include an optional assistant_id for multi-agent isolation.
+    Files are scoped by the caller-supplied `namespace` factory (e.g. per-user
+    or per-assistant isolation).
     """
 
     def __init__(
         self,
         *,
-        store: BaseStore | None = None,
         namespace: NamespaceFactory,
+        store: BaseStore | None = None,
         file_format: FileFormat = "v2",
     ) -> None:
         r"""Initialize `StoreBackend`.
 
         Args:
+            namespace: Callable that receives a `Runtime` and returns a namespace
+                tuple for scoping store operations. Wildcards (`*`) are forbidden.
             store: Optional `BaseStore` instance. When provided, this store
-                is used directly. When `None` (the default), the store is
-                obtained at call time via `get_store()`, which requires
-                a LangGraph graph execution context.
-            namespace: Callable that receives a `Runtime` and returns
-                a namespace tuple for scoping store operations.
-                Wildcards (`*`) are forbidden.
+                is used directly. When `None`, the store is obtained at call time
+                via `get_store()`, which requires a LangGraph graph execution
+                context.
             file_format: Storage format version. `"v1"` stores
                 content as `list[str]` (lines split on `\n`) without an
                 `encoding` field. `"v2"` (default) stores content as a
@@ -141,7 +142,8 @@ class StoreBackend(BackendProtocol):
             msg = (
                 "StoreBackend must be used inside a LangGraph graph execution "
                 "(e.g. via create_deep_agent), or initialized with an explicit "
-                "store: StoreBackend(store=my_store, namespace=...)"
+                "store and namespace: StoreBackend(store=my_store, "
+                "namespace=lambda _rt: ('filesystem',))"
             )
             raise RuntimeError(msg) from None
 
@@ -154,35 +156,49 @@ class StoreBackend(BackendProtocol):
         attributes require graph execution.
         """
         try:
-            runtime = get_runtime()
+            runtime: Runtime[Any] | None = get_runtime()
         except (RuntimeError, KeyError):
             runtime = None
-        return _validate_namespace(self._namespace(runtime))
+        try:
+            namespace = self._namespace(cast("Runtime[Any]", runtime))
+        except AttributeError as exc:
+            if runtime is None:
+                msg = (
+                    "The namespace factory tried to read the Runtime, but it is "
+                    "unavailable (running outside a LangGraph graph execution). "
+                    "Use StoreBackend inside a graph (e.g. via create_deep_agent), "
+                    "or pass a namespace factory that does not read the Runtime."
+                )
+                raise RuntimeError(msg) from exc
+            raise
+        return _validate_namespace(namespace)
 
     def _convert_store_item_to_file_data(self, store_item: Item) -> FileData:
-        """Convert a store `Item` to `FileData` format.
+        """Convert current and legacy persisted store content to `FileData`.
 
         Args:
             store_item: The store `Item` containing file data.
 
         Returns:
-            `FileData` dict with content and encoding.
+            `FileData` with string content and encoding. Legacy `list[str]`
+                content is joined without modifying the persisted item. Includes
+                `created_at` and `modified_at` when present.
 
-                Includes `created_at` and `modified_at` when present in the store item.
+        Raises:
+            ValueError: If the store item has no content.
+            TypeError: If content is neither a string nor a legacy list of strings.
         """
         raw_content = store_item.value.get("content")
         if raw_content is None:
             msg = f"Store item does not contain valid content field. Got: {store_item.value.keys()}"
             raise ValueError(msg)
 
-        # Reject legacy list[str] format
-        if isinstance(raw_content, list):
-            msg = f"Store item content must be a plain str; list[str] content is no longer supported. Got list of length {len(raw_content)}."
-            raise TypeError(msg)
-        if isinstance(raw_content, str):
+        if isinstance(raw_content, list) and all(isinstance(line, str) for line in raw_content):
+            content = "\n".join(raw_content)
+        elif isinstance(raw_content, str):
             content = raw_content
         else:
-            msg = f"Store item does not contain valid content field. Got: {store_item.value.keys()}"
+            msg = f"Store item `content` must be a `str` or legacy `list[str]`, got {type(raw_content).__name__}."
             raise TypeError(msg)
 
         result = FileData(
@@ -347,9 +363,7 @@ class StoreBackend(BackendProtocol):
                 fd = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
-            # BACKWARDS COMPAT: handle legacy list[str] content for size computation
-            raw = fd.get("content", "")
-            size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
+            size = len(file_data_to_string(fd).encode("utf-8"))
             infos.append(
                 {
                     "path": item.key,
@@ -398,18 +412,7 @@ class StoreBackend(BackendProtocol):
         if _get_backend_read_file_type(file_path) != "text":
             return ReadResult(file_data=file_data)
 
-        sliced = slice_read_response(file_data, offset, limit)
-        if isinstance(sliced, ReadResult):
-            return sliced
-        sliced_fd = FileData(
-            content=sliced,
-            encoding=file_data.get("encoding", "utf-8"),
-        )
-        if "created_at" in file_data:
-            sliced_fd["created_at"] = file_data["created_at"]
-        if "modified_at" in file_data:
-            sliced_fd["modified_at"] = file_data["modified_at"]
-        return ReadResult(file_data=sliced_fd)
+        return slice_read_response(file_data, offset, limit)
 
     async def aread(
         self,
@@ -436,18 +439,7 @@ class StoreBackend(BackendProtocol):
         if _get_backend_read_file_type(file_path) != "text":
             return ReadResult(file_data=file_data)
 
-        sliced = slice_read_response(file_data, offset, limit)
-        if isinstance(sliced, ReadResult):
-            return sliced
-        sliced_fd = FileData(
-            content=sliced,
-            encoding=file_data.get("encoding", "utf-8"),
-        )
-        if "created_at" in file_data:
-            sliced_fd["created_at"] = file_data["created_at"]
-        if "modified_at" in file_data:
-            sliced_fd["modified_at"] = file_data["modified_at"]
-        return ReadResult(file_data=sliced_fd)
+        return slice_read_response(file_data, offset, limit)
 
     def write(
         self,
@@ -469,6 +461,7 @@ class StoreBackend(BackendProtocol):
             file_data = update_file_data(existing_file_data, content)
         else:
             file_data = create_file_data(content)
+        file_data["encoding"] = "utf-8"
         store_value = self._convert_file_data_to_store_value(file_data)
         store.put(namespace, file_path, store_value)
         return WriteResult(path=file_path)
@@ -493,6 +486,7 @@ class StoreBackend(BackendProtocol):
             file_data = update_file_data(existing_file_data, content)
         else:
             file_data = create_file_data(content)
+        file_data["encoding"] = "utf-8"
         store_value = self._convert_file_data_to_store_value(file_data)
         await store.aput(namespace, file_path, store_value)
         return WriteResult(path=file_path)
@@ -627,6 +621,8 @@ class StoreBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> GrepResult:
         """Search store files for a literal text pattern."""
         store = self._get_store()
@@ -638,10 +634,15 @@ class StoreBackend(BackendProtocol):
                 files[item.key] = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
-        return grep_matches_from_files(files, pattern, path, glob)
+        return grep_matches_from_files(files, pattern, path, glob, max_count=max_count)
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
-        """Find files matching a glob pattern in the store."""
+        """Find files matching a glob pattern in the store.
+
+        Matching follows the shared backend contract -- see `BackendProtocol.glob`.
+        A bare pattern is basename-at-any-depth, so `*.py` matches nested files.
+        A refused pattern is returned as `GlobResult(error=...)`, not raised.
+        """
         store = self._get_store()
         namespace = self._get_namespace()
         items = self._search_store_paginated(store, namespace)
@@ -651,19 +652,22 @@ class StoreBackend(BackendProtocol):
                 files[item.key] = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
-        result = _glob_search_files(files, pattern, path)
+        try:
+            result = _glob_search_files(files, pattern, path)
+        except InvalidGlobPatternError as exc:
+            # `glob` is a tool boundary: report a refused pattern as a result
+            # rather than raising, matching FilesystemBackend and SandboxBackend.
+            # Catch the specific type -- a bare `ValueError` here would also
+            # capture path-normalization failures and mislabel them as pattern
+            # errors, sending the model off rewriting a glob that was fine.
+            return GlobResult(error=str(exc))
         if result == "No files found":
             return GlobResult(matches=[])
         paths = result.split("\n")
         infos: list[FileInfo] = []
         for p in paths:
             fd = files.get(p)
-            if fd:
-                # BACKWARDS COMPAT: handle legacy list[str] content for size computation
-                raw = fd.get("content", "")
-                size = len("\n".join(raw)) if isinstance(raw, list) else len(raw)
-            else:
-                size = 0
+            size = len(file_data_to_string(fd).encode("utf-8")) if fd else 0
             infos.append(
                 {
                     "path": p,

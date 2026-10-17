@@ -21,6 +21,16 @@ def store_backend_runtime_context():
         var_child_runnable_config.reset(token)
 
 
+@contextmanager
+def no_runtime_context():
+    """Simulate running outside a LangGraph graph execution."""
+    token = var_child_runnable_config.set({})
+    try:
+        yield
+    finally:
+        var_child_runnable_config.reset(token)
+
+
 @pytest.fixture(autouse=True)
 def _langgraph_runtime_for_store_backend(request: pytest.FixtureRequest):
     """Auto-enable runtime context for StoreBackend tests outside graph execution."""

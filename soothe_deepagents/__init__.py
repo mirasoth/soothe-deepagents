@@ -3,7 +3,6 @@
 from soothe_deepagents._version import __version__
 from soothe_deepagents.graph import (
     DeepAgentState,
-    SystemPromptConfig,
     create_deep_agent,
 )
 from soothe_deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
@@ -42,7 +41,6 @@ __all__ = [
     "RubricMiddleware",
     "SubAgent",
     "SubAgentMiddleware",
-    "SystemPromptConfig",
     "__version__",
     "create_deep_agent",
     "register_harness_profile",

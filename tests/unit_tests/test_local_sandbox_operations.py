@@ -18,15 +18,19 @@ Linting exceptions:
 - ruff: noqa: S108 - /tmp paths are fine for these unit tests. These tests are only meant to run on CI.
 """
 
+import base64
+import hashlib
 import os
 import re
 import stat
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 
 import pytest
 from langchain.tools import ToolRuntime
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import BaseTool
 
 from soothe_deepagents.backends import CompositeBackend
 from soothe_deepagents.backends.filesystem import _map_exception_to_standard_error
@@ -42,7 +46,9 @@ from soothe_deepagents.backends.protocol import (
     WriteResult,
 )
 from soothe_deepagents.backends.sandbox import _EDIT_INLINE_MAX_BYTES, BaseSandbox
+from soothe_deepagents.graph import create_deep_agent
 from soothe_deepagents.middleware.filesystem import FilesystemMiddleware
+from tests.unit_tests.chat_model import GenericFakeChatModel
 
 # Skip all tests in this module unless RUN_SANDBOX_TESTS=true
 pytestmark = pytest.mark.skipif(
@@ -220,8 +226,9 @@ class LocalSubprocessSandbox(BaseSandbox):
         results: list[FileUploadResponse] = []
         for path, data in files:
             try:
-                Path(path).parent.mkdir(parents=True, exist_ok=True)
-                Path(path).write_bytes(data)
+                real_path = Path(self._to_real_path(path))
+                real_path.parent.mkdir(parents=True, exist_ok=True)
+                real_path.write_bytes(data)
                 results.append(FileUploadResponse(path=path, error=None))
             except Exception as exc:
                 error = _map_exception_to_standard_error(exc)
@@ -233,15 +240,15 @@ class LocalSubprocessSandbox(BaseSandbox):
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Read files from the local filesystem."""
         results: list[FileDownloadResponse] = []
-        for real_path in paths:
+        for path in paths:
             try:
-                content = Path(real_path).read_bytes()
-                results.append(FileDownloadResponse(path=real_path, content=content, error=None))
+                content = Path(self._to_real_path(path)).read_bytes()
+                results.append(FileDownloadResponse(path=path, content=content, error=None))
             except Exception as exc:
                 error = _map_exception_to_standard_error(exc)
                 if error is None:
                     raise
-                results.append(FileDownloadResponse(path=real_path, content=None, error=error))
+                results.append(FileDownloadResponse(path=path, content=None, error=error))
         return results
 
 
@@ -1374,8 +1381,8 @@ class TestLocalSandboxOperations:
         assert result is not None
         assert len(result) == 2
         paths = [info["path"] for info in result]
-        assert "file1.txt" in paths
-        assert "file2.txt" in paths
+        assert f"{base_dir}/file1.txt" in paths
+        assert f"{base_dir}/file2.txt" in paths
         assert not any(".py" in p for p in paths)
 
     def test_glob_recursive_pattern(self, sandbox: LocalSubprocessSandbox) -> None:
@@ -1405,7 +1412,7 @@ class TestLocalSandboxOperations:
         assert result == []
 
     def test_glob_with_directories(self, sandbox: LocalSubprocessSandbox) -> None:
-        """Test that glob includes directories in results."""
+        """Glob filters out directories and only returns regular files."""
         base_dir = "/tmp/test_sandbox_ops/glob_dirs"
         sandbox.execute(f"mkdir -p {base_dir}/dir1 {base_dir}/dir2")
         sandbox.write(f"{base_dir}/file.txt", "content")
@@ -1413,12 +1420,11 @@ class TestLocalSandboxOperations:
         result = sandbox.glob("*", path=base_dir).matches
 
         assert result is not None
-        assert len(result) == 3
-        # Check is_dir flags
-        dir_count = sum(1 for info in result if info["is_dir"])
+        assert len(result) == 1
+        # All results must be regular files
         file_count = sum(1 for info in result if not info["is_dir"])
-        assert dir_count == 2
         assert file_count == 1
+        assert result[0]["path"] == f"{base_dir}/file.txt"
 
     def test_glob_specific_extension(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test glob with specific file extension pattern."""
@@ -1447,7 +1453,7 @@ class TestLocalSandboxOperations:
         assert result is not None
         # Should only match hidden files
         paths = [info["path"] for info in result]
-        assert ".hidden1" in paths or ".hidden2" in paths
+        assert f"{base_dir}/.hidden1" in paths or f"{base_dir}/.hidden2" in paths
         # Should not match visible.txt
         assert not any("visible" in p for p in paths)
 
@@ -1465,10 +1471,10 @@ class TestLocalSandboxOperations:
         assert result is not None
         assert len(result) == 2
         paths = [info["path"] for info in result]
-        assert "file1.txt" in paths
-        assert "file2.txt" in paths
-        assert "file3.txt" not in paths
-        assert "fileA.txt" not in paths
+        assert f"{base_dir}/file1.txt" in paths
+        assert f"{base_dir}/file2.txt" in paths
+        assert f"{base_dir}/file3.txt" not in paths
+        assert f"{base_dir}/fileA.txt" not in paths
 
     def test_glob_with_question_mark(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test glob with single character wildcard (?)."""
@@ -1609,6 +1615,24 @@ class TestLocalSandboxOperations:
 # 5000 of these lines (~250 KB) clear the default eviction budget (~80 KB).
 _BIG_OUTPUT_CMD = 'for i in $(seq 1 5000); do echo "line $i: padding text to make the output long enough to offload"; done'
 
+# ~120 KB over only 3 lines: clears the eviction budget, but has fewer lines than
+# the wrapper's head+tail budget, so there is no middle to drop. The wrapper falls
+# back to a leading byte excerpt (the meta field is a negative surplus, -7) and
+# closes it with the in-band clip notice instead of a truncation marker.
+_FEW_LONG_LINES_CMD = "for i in 1 2 3; do printf 'line %s: ' \"$i\"; head -c 40000 /dev/zero | tr '\\0' x; echo; done"
+
+# 20 lines of 3 KB each: more lines than the head+tail budget, so this takes the
+# head/tail branch -- but `head -c 2000`/`tail -c 2000` bite before the line caps,
+# so the excerpts show fewer than 5 lines each and cut the outermost ones mid-line.
+# The truncation marker counts only whole middle lines, so that extra loss has to be
+# disclosed in-band.
+_MANY_LONG_LINES_CMD = "for i in $(seq 1 20); do printf 'line %s: ' \"$i\"; head -c 3000 /dev/zero | tr '\\0' x; echo; done"
+
+# 200 KB on a single line (no newlines at all). Paired with a 5 KB capture cap it
+# is both capped and too few lines for the head/tail branch, so the byte excerpt
+# has to report the cap rather than the output's real size.
+_ONE_HUGE_LINE_CMD = 'head -c 200000 /dev/zero | tr "\\0" x'
+
 
 class TestExecuteCaptureOffload:
     """End-to-end capture-at-source offload via the execute tool on a real shell.
@@ -1647,13 +1671,42 @@ class TestExecuteCaptureOffload:
             config={},
         )
 
+    @pytest.fixture(params=["sync", "async"])
+    def invoke(self, request: pytest.FixtureRequest) -> Callable[[BaseTool, dict], Awaitable[ToolMessage]]:
+        """Drive a tool through either `invoke` or `ainvoke`.
+
+        The execute tool forks on sync/async well before the backend does:
+        `sync_execute` calls `execute_with_offload` while `async_execute` calls
+        `aexecute_with_offload`, so each branch builds its own `ToolMessage` and
+        neither covers the other. Running every case both ways closes that gap
+        for free -- `BaseSandbox.aexecute` delegates to `execute` in a thread,
+        so the async path needs no extra backend support.
+        """
+        if request.param == "async":
+            return lambda tool, payload: tool.ainvoke(payload)
+
+        async def invoke_sync(tool: BaseTool, payload: dict) -> ToolMessage:
+            return tool.invoke(payload)
+
+        return invoke_sync
+
     @staticmethod
     def _capture_path(tool_call_id: str) -> str:
         return f"{VIRTUAL_SANDBOX_ROOT}/large_tool_results/{tool_call_id}"
 
-    def test_small_output_returned_inline_and_leaves_no_file(self, tools: tuple, sandbox: LocalSubprocessSandbox) -> None:
+    async def test_large_output_truncates_visible_tool_call_id(self, tools: tuple, invoke: Callable) -> None:
         execute_tool, _ = tools
-        result = execute_tool.invoke({"command": "echo hello", "runtime": self._runtime("c_small")})
+        tool_call_id = "c_" + "thought_signature" * 100
+        result = await invoke(execute_tool, {"command": _BIG_OUTPUT_CMD, "runtime": self._runtime(tool_call_id)})
+
+        assert result.tool_call_id == tool_call_id
+        assert f"{tool_call_id[:32]}..." in result.content
+        assert tool_call_id not in result.content
+        assert "large_tool_results/call-" in result.content
+
+    async def test_small_output_returned_inline_and_leaves_no_file(self, tools: tuple, sandbox: LocalSubprocessSandbox, invoke: Callable) -> None:
+        execute_tool, _ = tools
+        result = await invoke(execute_tool, {"command": "echo hello", "runtime": self._runtime("c_small")})
 
         assert "hello" in result.content
         assert "exit code 0" in result.content
@@ -1662,10 +1715,10 @@ class TestExecuteCaptureOffload:
         listing = sandbox.execute(f"ls {VIRTUAL_SANDBOX_ROOT}/large_tool_results/ 2>/dev/null | wc -l")
         assert listing.output.strip() == "0"
 
-    def test_large_output_offloads_and_full_content_roundtrips(self, tools: tuple) -> None:
+    async def test_large_output_offloads_and_full_content_roundtrips(self, tools: tuple, invoke: Callable) -> None:
         execute_tool, read_tool = tools
         rt = self._runtime("c_large")
-        result = execute_tool.invoke({"command": _BIG_OUTPUT_CMD, "runtime": rt})
+        result = await invoke(execute_tool, {"command": _BIG_OUTPUT_CMD, "runtime": rt})
 
         capture_path = self._capture_path("c_large")
         # Preview + pointer, not the full output inline.
@@ -1676,20 +1729,168 @@ class TestExecuteCaptureOffload:
         assert "lines truncated" in result.content
         # A middle line is absent from the preview...
         assert "line 2500:" not in result.content
+        # ...and the note explains the marker standing in for it. Asserted on the
+        # note's own wording rather than "lines truncated", which the note quotes
+        # and so matches whether or not a marker was inserted.
+        assert "lines of the form" in result.content
 
         # ...but recoverable in full via read_file on the offload path: a middle
         # slice the preview never showed is present on disk.
         read = read_tool.invoke({"file_path": capture_path, "offset": 2499, "limit": 3, "runtime": rt})
         assert "line 2500:" in read.content
 
-    def test_nonzero_exit_code_preserved(self, tools: tuple) -> None:
+    def test_offloaded_preview_reports_truncation_marker(self, sandbox: LocalSubprocessSandbox) -> None:
+        offload = sandbox.execute_with_offload(_BIG_OUTPUT_CMD, self._capture_path("c_omit"), max_inline_bytes=100)
+
+        assert offload.offloaded is True
+        assert offload.preview_has_truncation_marker is True
+        assert "lines truncated] ..." in offload.response.output
+
+    def test_offloaded_byte_excerpt_reports_no_marker_but_says_it_clipped(self, tools: tuple, sandbox: LocalSubprocessSandbox) -> None:
+        """Few-but-huge lines: no marker to explain, yet the end is still dropped."""
+        offload = sandbox.execute_with_offload(_FEW_LONG_LINES_CMD, self._capture_path("c_few"), max_inline_bytes=100)
+
+        assert offload.offloaded is True
+        assert offload.preview_has_truncation_marker is False
+        # No marker is claimed because none was inserted...
+        assert "lines truncated" not in offload.response.output
+        # ...but the excerpt drops the end of the output, so it says so in-band.
+        assert "output clipped here" in offload.response.output
+        assert "full output at the path above" in offload.response.output
+
+        # The tool message therefore drops the truncation-marker explanation while
+        # the body still discloses the clip.
         execute_tool, _ = tools
-        result = execute_tool.invoke({"command": "echo oops; exit 3", "runtime": self._runtime("c_ec")})
+        result = execute_tool.invoke({"command": _FEW_LONG_LINES_CMD, "runtime": self._runtime("c_few_tool")})
+        assert "Here is a preview of the result:" in result.content
+        assert "lines of the form" not in result.content
+        assert "output clipped here" in result.content
+
+    def test_capped_byte_excerpt_does_not_claim_the_path_holds_the_full_output(self, sandbox: LocalSubprocessSandbox) -> None:
+        """When capture hits its cap, neither the byte count nor the path is the whole story.
+
+        The wrapper only ever sees the capped file, so its byte count is the cap
+        rather than the command's real output size, and the saved file is itself
+        incomplete. The notice must not contradict the `truncated` status line the
+        caller renders next to it.
+        """
+        offload = sandbox.execute_with_offload(
+            _ONE_HUGE_LINE_CMD,
+            self._capture_path("c_capped"),
+            max_inline_bytes=100,
+            max_capture_bytes=5000,
+        )
+
+        assert offload.offloaded is True
+        assert offload.response.truncated is True
+        assert offload.preview_has_truncation_marker is False
+
+        notice = offload.response.output.splitlines()[-1]
+        assert "capture stopped at its 5000-byte limit" in notice
+        # The real output was 200000 bytes, so the cap must not be sold as the total...
+        assert "5000 bytes total" not in notice
+        # ...and the saved file is incomplete, so it must not be sold as the full output.
+        assert "full output at the path above" not in notice
+        assert "incomplete" in notice
+
+    def test_uncapped_byte_excerpt_reports_the_true_total_and_full_recovery(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Below the cap, the captured file really is the whole output."""
+        offload = sandbox.execute_with_offload(_FEW_LONG_LINES_CMD, self._capture_path("c_uncapped"), max_inline_bytes=100)
+
+        assert offload.response.truncated is False
+        notice = offload.response.output.splitlines()[-1]
+        assert "bytes total, full output at the path above" in notice
+        assert "capture stopped at its" not in notice
+
+    def test_capped_head_tail_preview_has_no_clip_notice(self, sandbox: LocalSubprocessSandbox) -> None:
+        """The clip notice belongs to the byte-excerpt branch only, capped or not."""
+        offload = sandbox.execute_with_offload(
+            _BIG_OUTPUT_CMD,
+            self._capture_path("c_capped_marker"),
+            max_inline_bytes=100,
+            max_capture_bytes=5000,
+        )
+
+        assert offload.response.truncated is True
+        assert offload.preview_has_truncation_marker is True
+        assert "output clipped here" not in offload.response.output
+
+    def test_offloaded_preview_shorter_than_excerpt_budget_omits_clip_notice(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Output above the inline budget but below the excerpt budget loses nothing."""
+        cmd = 'printf "a\\nb\\nc\\n"; head -c 300 /dev/zero | tr "\\0" x; echo'
+        offload = sandbox.execute_with_offload(cmd, self._capture_path("c_fits"), max_inline_bytes=100)
+
+        assert offload.offloaded is True
+        assert offload.preview_has_truncation_marker is False
+        # Nothing was dropped, so neither notice appears.
+        assert "lines truncated" not in offload.response.output
+        assert "output clipped here" not in offload.response.output
+
+    def test_head_tail_excerpts_disclose_their_byte_caps(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Long lines make the head/tail excerpts lose content the marker never counts.
+
+        `head -c`/`tail -c` run before the line caps, so the outermost shown lines are
+        cut mid-line and fewer lines appear than the budget. The marker only accounts
+        for whole middle lines, so the preview must say the rest out loud.
+        """
+        offload = sandbox.execute_with_offload(_MANY_LONG_LINES_CMD, self._capture_path("c_ht_clip"), max_inline_bytes=100)
+
+        assert offload.offloaded is True
+        assert offload.preview_has_truncation_marker is True
+        assert "byte-capped" in offload.response.output
+        # The marker keeps its own line rather than being glued onto a mid-line cut.
+        marker_lines = [line for line in offload.response.output.splitlines() if line.startswith("... [") and "lines truncated" in line]
+        assert len(marker_lines) == 1
+
+    def test_head_tail_excerpts_stay_quiet_when_byte_caps_do_not_bite(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Short lines fit inside the byte caps, so there is no extra loss to disclose."""
+        offload = sandbox.execute_with_offload(_BIG_OUTPUT_CMD, self._capture_path("c_ht_noclip"), max_inline_bytes=100)
+
+        assert offload.preview_has_truncation_marker is True
+        assert "byte-capped" not in offload.response.output
+
+    def test_capped_byte_excerpt_notice_agrees_with_the_status_line(self, sandbox: LocalSubprocessSandbox) -> None:
+        """The capped wording exists to not contradict the `truncated` status line.
+
+        That pairing is the whole reason for the variant, so assert both halves on the
+        composed message rather than only on the raw backend value.
+        """
+        capture_path = self._capture_path("c_capped_msg")
+        offload = sandbox.execute_with_offload(_ONE_HUGE_LINE_CMD, capture_path, max_inline_bytes=100, max_capture_bytes=5000)
+
+        middleware = FilesystemMiddleware(backend=sandbox)
+        content = middleware._interpret_capture_output(offload, capture_path, "c_capped_msg")
+
+        # The status line and the in-band notice must tell the model the same story.
+        assert "the saved file is incomplete" in content
+        assert "capture stopped at its 5000-byte limit" in content
+        assert "full output at the path above" not in content
+
+    async def test_nonzero_exit_code_preserved(self, tools: tuple, invoke: Callable) -> None:
+        execute_tool, _ = tools
+        result = await invoke(execute_tool, {"command": "echo oops; exit 3", "runtime": self._runtime("c_ec")})
 
         assert "oops" in result.content
         assert "exit code 3" in result.content
+        assert result.artifact == {"exit_code": 3}
 
-    def test_runaway_output_is_capped_and_flagged(self, tools: tuple, sandbox: LocalSubprocessSandbox, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_offloaded_result_carries_exit_code_artifact(self, tools: tuple, invoke: Callable) -> None:
+        # When the output is offloaded, `_interpret_capture_output` replaces the
+        # plain `[Command ... exit code N]` formatting with a `read_file` pointer,
+        # so the artifact is the only structured channel for the exit code.
+        execute_tool, _ = tools
+        result = await invoke(execute_tool, {"command": f"{_BIG_OUTPUT_CMD}; exit 3", "runtime": self._runtime("c_off_ec")})
+
+        assert self._capture_path("c_off_ec") in result.content  # actually offloaded
+        assert result.artifact == {"exit_code": 3}
+
+    async def test_runaway_output_is_capped_and_flagged(
+        self,
+        tools: tuple,
+        sandbox: LocalSubprocessSandbox,
+        monkeypatch: pytest.MonkeyPatch,
+        invoke: Callable,
+    ) -> None:
         # Cap must exceed the eviction budget so a capped result still offloads
         # (rather than fitting inline). Default budget is ~80 KB.
         cap = 100_000
@@ -1701,10 +1902,11 @@ class TestExecuteCaptureOffload:
         # the excess instead of SIGPIPE-killing the producer, so the command's real
         # exit code survives -- a regression guard: closing the pipe early would
         # report this successful command as failed.
-        result = execute_tool.invoke({"command": f"{_BIG_OUTPUT_CMD}; exit 0", "runtime": rt})
+        result = await invoke(execute_tool, {"command": f"{_BIG_OUTPUT_CMD}; exit 0", "runtime": rt})
 
         assert "exceeded the capture size limit" in result.content
         assert "succeeded with exit code 0" in result.content
+        assert result.artifact == {"exit_code": 0}
         # The on-disk capture file is bounded at the cap regardless of total output.
         size = sandbox.execute(f"wc -c < {self._capture_path('c_cap')}").output.strip()
         assert size == str(cap)
@@ -1727,3 +1929,42 @@ class TestExecuteCaptureOffload:
         offload = sandbox.execute_with_offload(_BIG_OUTPUT_CMD, on_path, max_inline_bytes=budget)
         assert offload.offloaded is True
         assert "line 2500:" not in offload.response.output  # middle omitted -> it's a preview
+
+
+class TestBinaryContentOffload:
+    """End-to-end binary read offload through `create_deep_agent` on a real shell."""
+
+    @pytest.fixture(autouse=True)
+    def setup_test_dir(self, tmp_path: Path) -> None:
+        self.sandbox = LocalSubprocessSandbox()
+        self.sandbox.set_real_root(str(tmp_path / "sandbox_ops"))
+        self.sandbox.execute("rm -rf /tmp/test_sandbox_ops && mkdir -p /tmp/test_sandbox_ops")
+
+    def test_read_image_snapshots_blob_in_sandbox(self) -> None:
+        raw = b"\x89PNG\r\n\x1a\n fake image data"
+        digest = hashlib.sha256(raw).hexdigest()
+        Path(self.sandbox._to_real_path(f"{VIRTUAL_SANDBOX_ROOT}/photo.png")).write_bytes(raw)
+        backend = CompositeBackend(default=self.sandbox, routes={}, artifacts_root=VIRTUAL_SANDBOX_ROOT)
+        model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "read_file", "args": {"file_path": f"{VIRTUAL_SANDBOX_ROOT}/photo.png"}, "id": "call_img", "type": "tool_call"}
+                        ],
+                    ),
+                    AIMessage(content="Here is the image."),
+                ]
+            )
+        )
+        agent = create_deep_agent(model=model, backend=backend, middleware=[FilesystemMiddleware(backend=backend, offload_binary_content=True)])
+
+        result = agent.invoke({"messages": [HumanMessage(content="Read the image")]})
+
+        tool_message = next(m for m in result["messages"] if m.type == "tool")
+        assert tool_message.content == [{"type": "image", "mime_type": "image/png", "deepagents_blob": digest}]
+        listing = self.sandbox.execute(f"sha256sum {VIRTUAL_SANDBOX_ROOT}/blobs/{digest}")
+        assert listing.output.split()[0] == digest
+        sent = next(m for m in model.call_history[1]["messages"] if m.type == "tool")
+        assert sent.content[0]["base64"] == base64.b64encode(raw).decode("ascii")

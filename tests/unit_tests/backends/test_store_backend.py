@@ -1,8 +1,6 @@
-from dataclasses import dataclass
 from typing import Any, Never
 
 import pytest
-from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.runtime import Runtime
 from langgraph.store.base import PutOp
@@ -11,6 +9,7 @@ from langgraph.store.memory import InMemoryStore
 from soothe_deepagents.backends.protocol import EditResult, ReadResult, WriteResult
 from soothe_deepagents.backends.store import StoreBackend, _validate_namespace
 from soothe_deepagents.middleware.filesystem import FilesystemMiddleware
+from tests.unit_tests.backends.conftest import no_runtime_context
 
 
 def test_store_backend_crud_and_search():
@@ -39,12 +38,56 @@ def test_store_backend_crud_and_search():
     matches = be.grep("hi", path="/").matches
     assert matches is not None and any(m["path"] == "/docs/readme.md" for m in matches)
 
-    # glob
+    # glob: bare `*.md` and `**/*.md` both match nested files (shared contract)
     g = be.glob("*.md", path="/").matches
-    assert len(g) == 0
+    assert any(i["path"] == "/docs/readme.md" for i in g)
 
     g2 = be.glob("**/*.md", path="/").matches
     assert any(i["path"] == "/docs/readme.md" for i in g2)
+    assert {i["path"] for i in g} == {i["path"] for i in g2}
+
+
+def test_store_backend_read_surfaces_pagination_metadata():
+    """`StoreBackend.read` propagates the pagination metadata from `slice_read_response`."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/notes.txt", "one\ntwo\nthree\nfour\nfive")
+
+    result = be.read("/notes.txt", offset=1, limit=2)
+
+    assert result.error is None
+    assert result.total_lines == 5
+    assert result.start_line == 2
+    assert result.end_line == 3
+    assert result.next_offset == 3
+
+
+@pytest.mark.parametrize(("offset", "limit"), [(0, 0), (0, -3), (-1, 0)])
+def test_store_backend_read_non_positive_limit_returns_empty_read(offset: int, limit: int):
+    """`StoreBackend.read` inherits the shared clamp rather than raising."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/notes.txt", "one\ntwo\nthree")
+
+    result = be.read("/notes.txt", offset=offset, limit=limit)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ""
+    assert result.start_line is None
+
+
+def test_store_backend_read_negative_offset_starts_at_first_line():
+    """A negative offset is clamped to the start of the file instead of erroring."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/notes.txt", "one\ntwo\nthree")
+
+    result = be.read("/notes.txt", offset=-1, limit=2)
+
+    assert result.error is None
+    assert result.start_line == 1
+    assert result.end_line == 2
 
 
 def test_store_backend_reads_mkv_as_binary_without_slicing():
@@ -66,6 +109,119 @@ def test_store_backend_reads_mkv_as_binary_without_slicing():
     assert read_result.error is None
     assert read_result.file_data is not None
     assert read_result.file_data["content"] == "single line of bytes"
+
+
+def test_store_backend_reads_legacy_list_content() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    legacy_content = ["hello", "world", ""]
+    mem_store.put(
+        ("filesystem",),
+        "/legacy.txt",
+        {
+            "content": legacy_content,
+            "created_at": "2025-01-01T00:00:00+00:00",
+            "modified_at": "2025-01-02T00:00:00+00:00",
+        },
+    )
+
+    read_result = be.read("/legacy.txt")
+    assert read_result.file_data is not None
+    assert read_result.file_data["content"] == "hello\nworld\n"
+    assert read_result.file_data["encoding"] == "utf-8"
+
+    listing = be.ls("/").entries
+    assert listing is not None
+    assert listing[0]["size"] == len("hello\nworld\n")
+
+    matches = be.grep("world", path="/").matches
+    assert matches is not None
+    assert matches[0]["text"] == "world"
+
+    glob_matches = be.glob("*.txt", path="/").matches
+    assert glob_matches is not None
+    assert glob_matches[0]["size"] == len("hello\nworld\n")
+
+    download = be.download_files(["/legacy.txt"])[0]
+    assert download.content == b"hello\nworld\n"
+
+    stored = mem_store.get(("filesystem",), "/legacy.txt")
+    assert stored is not None
+    assert stored.value["content"] == legacy_content
+    assert "encoding" not in stored.value
+
+
+def test_store_backend_reports_utf8_byte_sizes() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    content = "hello 😀 €"
+    be.write("/unicode.txt", content)
+    expected_size = len(content.encode("utf-8"))
+
+    listing = be.ls("/").entries
+    assert listing is not None
+    assert listing[0]["size"] == expected_size
+
+    matches = be.glob("*.txt", path="/").matches
+    assert matches is not None
+    assert matches[0]["size"] == expected_size
+
+
+def test_store_backend_rejects_legacy_lists_with_non_string_items() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    mem_store.put(("filesystem",), "/invalid.txt", {"content": ["hello", 1]})
+
+    with pytest.raises(TypeError, match="got list"):
+        be.read("/invalid.txt")
+
+
+def test_store_backend_write_migrates_legacy_list_content() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    created_at = "2025-01-01T00:00:00+00:00"
+    mem_store.put(
+        ("filesystem",),
+        "/legacy.txt",
+        {"content": ["hello", "world"], "created_at": created_at},
+    )
+
+    result = be.write("/legacy.txt", "replacement")
+
+    assert result.error is None
+    stored = mem_store.get(("filesystem",), "/legacy.txt")
+    assert stored is not None
+    assert stored.value["content"] == "replacement"
+    assert stored.value["encoding"] == "utf-8"
+    assert stored.value["created_at"] == created_at
+
+
+def test_store_backend_edit_migrates_legacy_list_content() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    mem_store.put(("filesystem",), "/legacy.txt", {"content": ["hello", "world"]})
+
+    result = be.edit("/legacy.txt", "world", "there")
+
+    assert result.error is None
+    stored = mem_store.get(("filesystem",), "/legacy.txt")
+    assert stored is not None
+    assert stored.value["content"] == "hello\nthere"
+    assert stored.value["encoding"] == "utf-8"
+
+
+def test_store_backend_edit_empty_old_string_returns_error() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    mem_store.put(("filesystem",), "/legacy.txt", {"content": ["hello", "world"]})
+
+    result = be.edit("/legacy.txt", "", "there")
+
+    assert result.error is not None
+    assert "old_string cannot be empty" in result.error
+    stored = mem_store.get(("filesystem",), "/legacy.txt")
+    assert stored is not None
+    assert stored.value["content"] == ["hello", "world"]
 
 
 def test_store_backend_write_overwrites_existing_file():
@@ -157,26 +313,17 @@ def test_store_backend_ls_trailing_slash():
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
 
-@pytest.mark.parametrize("file_format", ["v1", "v2"])
-def test_store_backend_intercept_large_tool_result(file_format):
+def test_store_backend_intercept_large_tool_result():
     """Test that StoreBackend properly handles large tool result interception."""
     mem_store = InMemoryStore()
     middleware = FilesystemMiddleware(
-        backend=StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format),
+        backend=StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",)),
         tool_token_limit_before_evict=1000,
     )
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")
-    rt = ToolRuntime(
-        state={"messages": []},
-        context=None,
-        tool_call_id="t2",
-        store=mem_store,
-        stream_writer=lambda _: None,
-        config={},
-    )
-    result = middleware._intercept_large_tool_result(tool_message, rt)
+    result = middleware._intercept_large_tool_result(tool_message)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content
@@ -185,14 +332,6 @@ def test_store_backend_intercept_large_tool_result(file_format):
     stored_content = mem_store.get(("filesystem",), "/large_tool_results/test_456")
     assert stored_content is not None
     assert stored_content.value["content"] == large_content
-
-
-@dataclass
-class UserContext:
-    """Simple context object for testing."""
-
-    user_id: str
-    workspace_id: str | None = None
 
 
 def test_store_backend_namespace_user_scoped() -> None:
@@ -279,11 +418,40 @@ def test_store_backend_namespace_error_handling() -> None:
         be.write("/test.txt", "content")
 
 
-def test_store_backend_requires_namespace() -> None:
-    """StoreBackend requires an explicit namespace factory."""
+def test_store_backend_namespace_is_required() -> None:
+    """`namespace` is a required keyword-only argument."""
     mem_store = InMemoryStore()
     with pytest.raises(TypeError):
         StoreBackend(store=mem_store)  # type: ignore[call-arg]
+
+
+def test_store_backend_runtime_reading_factory_outside_graph() -> None:
+    """A factory that reads the runtime outside a graph raises a clear error.
+
+    `get_runtime()` fails outside graph execution, so the factory receives
+    `None`. A factory that reads runtime attributes should surface an
+    actionable `RuntimeError` rather than an opaque `AttributeError`.
+    """
+    mem_store = InMemoryStore()
+    be = StoreBackend(
+        store=mem_store,
+        namespace=lambda rt: (rt.server_info.user.identity, "filesystem"),
+    )
+
+    # Opt out of the module-level autouse runtime so `get_runtime()` really is
+    # unavailable, which is what "outside a graph" means here.
+    with no_runtime_context(), pytest.raises(RuntimeError, match="outside a LangGraph graph execution"):
+        be.write("/test.txt", "content")
+
+
+def test_store_backend_arg_ignoring_factory_works_outside_graph() -> None:
+    """A factory that ignores its argument still works outside a graph."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    result = be.write("/test.txt", "content")
+    assert result.error is None
+    assert mem_store.get(("filesystem",), "/test.txt") is not None
 
 
 def test_store_backend_namespace_with_context() -> None:
